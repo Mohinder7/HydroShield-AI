@@ -5,6 +5,7 @@ import FloodMap from "./pages/FloodMap";
 import Alerts from "./pages/Alerts";
 import Shelters from "./pages/Shelters";
 import Routing from "./pages/Routing";
+import Analytics from "./pages/Analytics";
 
 function App() {
     const [activePage, setActivePage] = useState("Dashboard");
@@ -137,11 +138,16 @@ function App() {
 
                     {activePage === "Routing" && <Routing />}
 
+                    {activePage === "Analytics" && (
+                        <Analytics />
+                    )}
+
                     {activePage !== "Dashboard" &&
                       activePage !== "Flood Map" &&
                       activePage !== "Alerts" &&
                       activePage !== "Shelters" && 
-                      activePage !== "Routing" &&(
+                      activePage !== "Routing" &&
+                      activePage !== "Analytics" &&(
                         <div className="welcome-card">
                           <h2>{activePage}</h2>
 
