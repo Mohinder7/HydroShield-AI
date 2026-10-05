@@ -23,6 +23,8 @@ def read_features(path, band_indexes):
         stack = np.stack(arrays, axis=-1)
         # Negative values are valid for dB backscatter. Unit interpretation is selected by the user.
         valid = np.isfinite(stack).all(axis=-1)
+        if valid.any() and not np.any(stack[valid] != 0):
+            raise ValueError("All valid raster pixels are zero; verify that the input contains Sentinel-1 backscatter data.")
         return stack, valid, src.profile.copy()
 
 
@@ -86,7 +88,8 @@ def save_mask(path, mask, profile, valid=None):
 
 def calculate_area(mask, profile):
     """Calculate area using pixel dimensions; projected CRS units are assumed metres."""
-    pixel_area = abs(profile["transform"].a * profile["transform"].e)
+    transform = profile["transform"]
+    pixel_area = abs(transform.a * transform.e - transform.b * transform.d)
     crs = profile.get("crs")
     if crs is None or not crs.is_projected:
         raise ValueError("Area reporting requires a projected CRS in metres; reproject the raster first.")
@@ -107,3 +110,23 @@ def risk_summary(area_km2, total_km2, flooded_percent):
     return {"flooded_km2": area_km2, "total_km2": total_km2,
             "flooded_percent": flooded_percent, "level": level,
             "rule": "Prototype area-share rule: <10% Low, 10–<30% Moderate, ≥30% High."}
+
+
+def otsu_threshold(values_1d):
+    """Manual Otsu thresholding for automatic pseudo-label generation."""
+    hist, bin_edges = np.histogram(values_1d, bins=256)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    total = hist.sum()
+    best_t, best_var = bin_centers[0], 0.0
+    for i in range(1, len(hist)):
+        w0 = hist[:i].sum() / total
+        w1 = hist[i:].sum() / total
+        if w0 == 0 or w1 == 0:
+            continue
+        mu0 = (hist[:i] * bin_centers[:i]).sum() / (hist[:i].sum() + 1e-12)
+        mu1 = (hist[i:] * bin_centers[i:]).sum() / (hist[i:].sum() + 1e-12)
+        var = w0 * w1 * (mu0 - mu1) ** 2
+        if var > best_var:
+            best_var = var
+            best_t = bin_centers[i]
+    return best_t
