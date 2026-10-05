@@ -9,7 +9,15 @@ import {
     useMapEvents,
 } from "react-leaflet";
 import L from "leaflet";
-import { findSafeRoute } from "../api";
+import {
+    findSafeRoute,
+    getRasterInfo,
+    preprocessSentinel1,
+    getBundledRaster,
+    getBundledRoads,
+    getBundledShelters,
+} from "../api";
+import Icon from "../components/Icon";
 
 import "leaflet/dist/leaflet.css";
 
@@ -23,7 +31,7 @@ const startIcon = new L.Icon({
     shadowSize: [41, 41],
 });
 
-const defaultCenter = [16.5062, 80.6480];
+const defaultCenter = [25.59, 85.09];
 
 function LocationPicker({ onLocationSelect }) {
     useMapEvents({
@@ -57,6 +65,8 @@ export default function Routing() {
     const [rasterFile, setRasterFile] = useState(null);
     const [roadsFile, setRoadsFile] = useState(null);
     const [sheltersFile, setSheltersFile] = useState(null);
+    const [bandCount, setBandCount] = useState(1);
+    const [bandNames, setBandNames] = useState([]);
 
     // Location is kept internally.
     // The user does not need to enter coordinates.
@@ -68,10 +78,73 @@ export default function Routing() {
     const [valueScale, setValueScale] = useState("dB");
 
     const [loading, setLoading] = useState(false);
+    const [preprocessing, setPreprocessing] = useState(false);
     const [locating, setLocating] = useState(false);
+    const [bundledLoading, setBundledLoading] = useState(false);
 
     const [result, setResult] = useState(null);
     const [error, setError] = useState("");
+    const [invalidRaster, setInvalidRaster] = useState(false);
+
+    const handleRasterChange = async (event) => {
+        const selectedFile = event.target.files?.[0] || null;
+        setRasterFile(null);
+        setBand(1);
+        setBandCount(1);
+        setBandNames([]);
+        setResult(null);
+        setError("");
+        setInvalidRaster(false);
+
+        if (!selectedFile) {
+            return;
+        }
+
+        try {
+            let raster = selectedFile;
+            if (selectedFile.name.toLowerCase().endsWith(".zip")) {
+                setPreprocessing(true);
+                raster = await preprocessSentinel1(selectedFile);
+            }
+            const info = await getRasterInfo(raster);
+            setRasterFile(raster);
+            setBandCount(info.bands);
+            setBandNames(info.descriptions || []);
+        } catch (requestError) {
+            setError(requestError.message || "Could not inspect raster.");
+        } finally {
+            setPreprocessing(false);
+        }
+    };
+
+    // -----------------------------------------
+    // USE BUNDLED DATASETS
+    // -----------------------------------------
+    const handleUseBundled = async () => {
+        setBundledLoading(true);
+        setError("");
+        setResult(null);
+        setInvalidRaster(false);
+        try {
+            const [raster, roads, shelters] = await Promise.all([
+                getBundledRaster(),
+                getBundledRoads(),
+                getBundledShelters(),
+            ]);
+            setRoadsFile(roads);
+            setSheltersFile(shelters);
+            // Inspect raster metadata
+            const info = await getRasterInfo(raster);
+            setRasterFile(raster);
+            setBandCount(info.bands);
+            setBandNames(info.descriptions || []);
+            setBand(1);
+        } catch (e) {
+            setError(e.message || "Could not load bundled datasets.");
+        } finally {
+            setBundledLoading(false);
+        }
+    };
 
     // -----------------------------------------
     // GET CURRENT GPS LOCATION
@@ -197,10 +270,13 @@ export default function Routing() {
 
             setResult(data);
         } catch (err) {
-            setError(
-                err.message ||
-                    "Safe route calculation failed."
+            const hasNoBackscatter = err.message?.includes(
+                "All valid raster pixels are zero"
             );
+            setInvalidRaster(Boolean(hasNoBackscatter));
+            setError(hasNoBackscatter
+                ? "This GeoTIFF contains only zero values. Upload a validated Sentinel-1 backscatter raster before calculating a route."
+                : err.message || "Safe route calculation failed.");
         } finally {
             setLoading(false);
         }
@@ -255,7 +331,7 @@ export default function Routing() {
                     <div className="panel-title">
 
                         <div className="panel-icon">
-                            🛣️
+                            <Icon name="route" size={24} />
                         </div>
 
                         <div>
@@ -275,7 +351,7 @@ export default function Routing() {
                     ================================= */}
                     <div className="form-section">
 
-                        <h3>📍 Your Location</h3>
+                        <h3><Icon name="pin" size={17} /> Your Location</h3>
 
                         <p className="location-help">
                             You don't need to know your
@@ -293,8 +369,8 @@ export default function Routing() {
                         >
                             <span>
                                 {locating
-                                    ? "⏳"
-                                    : "📍"}
+                                    ? <span className="icon-spinner" aria-hidden="true" />
+                                    : <Icon name="pin" size={17} />}
                             </span>
 
                             {locating
@@ -308,14 +384,11 @@ export default function Routing() {
                             <div className="location-detected">
 
                                 <div className="location-check">
-                                    ✓
+                                    <Icon name="check" size={15} />
                                 </div>
 
                                 <div>
-                                    <strong>
-                                        Location detected
-                                    </strong>
-
+                                    <strong>Location detected</strong>
                                     <small>
                                         {locationMethod ===
                                         "gps"
@@ -336,7 +409,7 @@ export default function Routing() {
                         <div className="map-selection-hint">
 
                             <span className="map-hint-icon">
-                                🗺️
+                                <Icon name="map" size={19} />
                             </span>
 
                             <div>
@@ -357,36 +430,65 @@ export default function Routing() {
 
 
                     {/* =================================
+                        BUNDLED DATASETS
+                    ================================= */}
+                    <div className="form-section">
+                        <h3><Icon name="layers" size={17} /> Bundled Datasets</h3>
+                        <p style={{fontSize: "0.85rem", color: "#64748b", marginBottom: 12}}>
+                            Automatically load the bundled Patna SAR raster, road network, and shelter dataset.
+                        </p>
+                        <button
+                            className="location-button"
+                            style={{background: bundledLoading ? undefined : "#1d4ed8", color: "#fff"}}
+                            onClick={handleUseBundled}
+                            disabled={bundledLoading}
+                        >
+                            {bundledLoading
+                                ? <><span className="icon-spinner" aria-hidden="true" /> Loading datasets...</>
+                                : <><Icon name="layers" size={17} /> Use Bundled Datasets</>}
+                        </button>
+                        {rasterFile && roadsFile && sheltersFile && !bundledLoading && (
+                            <div className="location-detected" style={{marginTop: 8}}>
+                                <div className="location-check"><Icon name="check" size={15} /></div>
+                                <div><strong>All datasets loaded</strong><small>Bundled Patna SAR, roads, and shelters ready.</small></div>
+                            </div>
+                        )}
+                    </div>
+
+
+                    {/* =================================
                         FLOOD RASTER
                     ================================= */}
                     <div className="form-section">
 
-                        <h3>🛰️ Flood Raster</h3>
+                        <h3><Icon name="layers" size={17} /> Flood Raster</h3>
 
                         <label className="file-upload">
 
                             <input
                                 type="file"
-                                accept=".tif,.tiff"
-                                onChange={(e) =>
-                                    setRasterFile(
-                                        e.target.files?.[0] ||
-                                            null
-                                    )
-                                }
+                                accept=".tif,.tiff,.zip"
+                                onChange={handleRasterChange}
                             />
 
                             <span className="upload-icon">
-                                🛰️
+                                <Icon name="upload" size={18} />
                             </span>
 
                             <span>
                                 {rasterFile
                                     ? rasterFile.name
-                                    : "Choose Sentinel-1 GeoTIFF"}
+                                    : preprocessing
+                                    ? "Preprocessing Sentinel-1 with SNAP..."
+                                    : "Choose GeoTIFF or zipped GRD SAFE"}
                             </span>
 
                         </label>
+
+                        <small>
+                            Zipped GRD SAFE products are preprocessed with SNAP GPT.
+                            GeoTIFFs must already contain calibrated backscatter.
+                        </small>
 
                     </div>
 
@@ -396,7 +498,7 @@ export default function Routing() {
                     ================================= */}
                     <div className="form-section">
 
-                        <h3>🛣️ Road Network</h3>
+                        <h3><Icon name="route" size={17} /> Road Network</h3>
 
                         <label className="file-upload">
 
@@ -412,7 +514,7 @@ export default function Routing() {
                             />
 
                             <span className="upload-icon">
-                                🛣️
+                                <Icon name="upload" size={18} />
                             </span>
 
                             <span>
@@ -436,7 +538,7 @@ export default function Routing() {
                     ================================= */}
                     <div className="form-section">
 
-                        <h3>🏠 Emergency Shelters</h3>
+                        <h3><Icon name="building" size={17} /> Emergency Shelters</h3>
 
                         <label className="file-upload">
 
@@ -452,7 +554,7 @@ export default function Routing() {
                             />
 
                             <span className="upload-icon">
-                                🏠
+                                <Icon name="upload" size={18} />
                             </span>
 
                             <span>
@@ -476,7 +578,7 @@ export default function Routing() {
                     ================================= */}
                     <div className="form-section">
 
-                        <h3>🌊 Flood Detection</h3>
+                        <h3><Icon name="droplet" size={17} /> Flood Detection</h3>
 
                         <div className="coordinate-grid">
 
@@ -488,21 +590,21 @@ export default function Routing() {
 
                                 <select
                                     value={band}
-                                    onChange={(e) =>
-                                        setBand(
-                                            Number(
-                                                e.target.value
-                                            )
-                                        )
-                                    }
+                                    onChange={(event) => {
+                                        setBand(Number(event.target.value));
+                                        setResult(null);
+                                        setError("");
+                                        setInvalidRaster(false);
+                                    }}
                                 >
-                                    <option value={1}>
-                                        Band 1
-                                    </option>
-
-                                    <option value={2}>
-                                        Band 2
-                                    </option>
+                                    {Array.from({ length: bandCount }, (_, index) => (
+                                        <option key={index + 1} value={index + 1}>
+                                            {bandNames[index] &&
+                                            bandNames[index] !== `Band ${index + 1}`
+                                                ? `Band ${index + 1} · ${bandNames[index]}`
+                                                : `Band ${index + 1}`}
+                                        </option>
+                                    ))}
                                 </select>
 
                             </div>
@@ -582,7 +684,7 @@ export default function Routing() {
                         <div className="route-error">
 
                             <strong>
-                                ⚠️ Routing Notice
+                                <Icon name="alert" size={17} /> {invalidRaster ? "Raster Data Notice" : "Routing Notice"}
                             </strong>
 
                             <span>
@@ -597,11 +699,11 @@ export default function Routing() {
                     <button
                         className="find-route-button"
                         onClick={handleFindRoute}
-                        disabled={loading}
+                        disabled={loading || preprocessing || invalidRaster}
                     >
                         {loading
                             ? "Calculating Safe Route..."
-                            : "Find Safe Route →"}
+                            : "Find Safe Route"}
                     </button>
 
 
@@ -762,7 +864,7 @@ export default function Routing() {
                                 <div className="map-empty-state">
 
                                     <div>
-                                        📍
+                                        <Icon name="pin" size={34} />
                                     </div>
 
                                     <h3>
@@ -809,7 +911,7 @@ export default function Routing() {
                             <div className="result-card">
 
                                 <span className="result-icon">
-                                    📏
+                                    <Icon name="ruler" size={21} />
                                 </span>
 
                                 <div>
@@ -840,7 +942,7 @@ export default function Routing() {
                             <div className="result-card">
 
                                 <span className="result-icon">
-                                    🚧
+                                    <Icon name="route" size={21} />
                                 </span>
 
                                 <div>
@@ -863,7 +965,7 @@ export default function Routing() {
                             <div className="result-card shelter-result">
 
                                 <span className="result-icon">
-                                    🏠
+                                    <Icon name="building" size={21} />
                                 </span>
 
                                 <div>
@@ -893,7 +995,7 @@ export default function Routing() {
                             <div className="no-route-result">
 
                                 <div>
-                                    ⚠️
+                                    <Icon name="alert" size={23} />
                                 </div>
 
                                 <div>
