@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import Icon from "../components/Icon";
 import {
     MapContainer,
     TileLayer,
@@ -6,66 +7,57 @@ import {
     Popup,
     useMap,
 } from "react-leaflet";
+import { getShelters, getBundledShelters } from "../api";
 
 import "leaflet/dist/leaflet.css";
 
 const FALLBACK_SHELTERS = [
     {
         id: 1,
-        name: "Komma Sitaramaiah ZP Girls High School",
-        shortName: "KSR ZP Girls High School",
-        location: "Patamatalanka, Vijayawada",
+        name: "Patna Junction Relief Center",
+        shortName: "Patna Junction Relief Center",
+        location: "Patna Junction, Patna, Bihar",
         type: "Flood Relief Centre",
         status: "ACTIVE",
-        latitude: 16.5052,
-        longitude: 80.6379,
+        latitude: 25.6022,
+        longitude: 85.1376,
         capacity: null,
         occupied: null,
-        facilities: [
-            "Food",
-            "Drinking Water",
-            "Medical Aid",
-        ],
-        sourceDate: "Used during Vijayawada floods – Sep 2024",
+        facilities: ["Food", "Drinking Water", "Medical Aid"],
+        sourceDate: "Patna SAR dataset — bundled shelter",
     },
-
     {
         id: 2,
-        name: "Valluri Sarojini Devi Municipal Corporation High School",
-        shortName: "Valluri Sarojini Devi MC High School",
-        location: "Patamata Lanka, Vijayawada",
-        type: "Flood Relief Centre",
+        name: "AIIMS Patna Shelter",
+        shortName: "AIIMS Patna Shelter",
+        location: "AIIMS Campus, Phulwari Sharif, Patna",
+        type: "Medical Flood Relief Centre",
         status: "ACTIVE",
-        latitude: 16.4955,
-        longitude: 80.6640,
+        latitude: 25.5605,
+        longitude: 85.0410,
         capacity: null,
         occupied: null,
-        facilities: [
-            "Food",
-            "Drinking Water",
-            "Medical Aid",
-        ],
-        sourceDate: "Used during Vijayawada floods – Sep 2024",
-    },
-
-    {
-        id: 3,
-        name: "Indira Gandhi Municipal Corporation Stadium",
-        shortName: "IGMC Stadium",
-        location: "Labbipet, Vijayawada",
-        type: "Temporary Flood Relief Centre",
-        status: "VERIFY",
-        latitude: 16.504628,
-        longitude: 80.637957,
-        capacity: null,
-        occupied: null,
-        facilities: [
-            "Large Emergency Facility",
-            "Relief Support",
-        ],
-        sourceDate: "Used as flood relief camp – Aug 2020",
+        facilities: ["Food", "Drinking Water", "Medical Aid", "Hospital"],
+        sourceDate: "Patna SAR dataset — bundled shelter",
     },
 ];
+
+function geoJsonToShelters(geojson) {
+    return (geojson.features || []).map((f, idx) => ({
+        id: idx + 1,
+        name: f.properties?.name || `Shelter ${idx + 1}`,
+        shortName: f.properties?.name || `Shelter ${idx + 1}`,
+        location: f.properties?.location || "Patna, Bihar",
+        type: f.properties?.type || "Flood Relief Centre",
+        status: f.properties?.status || "ACTIVE",
+        latitude: f.geometry.coordinates[1],
+        longitude: f.geometry.coordinates[0],
+        capacity: f.properties?.capacity || null,
+        occupied: f.properties?.occupied || null,
+        facilities: f.properties?.facilities || ["Food", "Drinking Water", "Medical Aid"],
+        sourceDate: "Bundled Patna shelter dataset",
+    }));
+}
 
 function ShelterMapController({ shelters }) {
     const map = useMap();
@@ -103,38 +95,45 @@ function Shelters() {
         FALLBACK_SHELTERS[0]
     );
 
-    const [loading, setLoading] = useState(false);
+    const [loading, setLoading] = useState(true);
     const [lastUpdated, setLastUpdated] = useState(null);
     const [backendConnected, setBackendConnected] = useState(false);
 
-    const fetchLiveShelters = async () => {
-        setLoading(true);
+    const fetchLiveShelters = async (showLoading = true) => {
+        if (showLoading) {
+            setLoading(true);
+        }
 
         try {
-            const apiUrl =
-                import.meta.env.VITE_API_URL ||
-                "http://localhost:8000/api";
+            // 1. Try bundled GeoJSON from backend
+            const file = await getBundledShelters();
+            const text = await file.text();
+            const geojson = JSON.parse(text);
+            const mapped = geoJsonToShelters(geojson);
 
-            const response = await fetch(
-                `${apiUrl}/shelters`
-            );
-
-            if (!response.ok) {
-                throw new Error("Shelter API unavailable");
+            if (mapped.length > 0) {
+                setShelters(mapped);
+                setBackendConnected(true);
+                setLastUpdated(new Date());
+                return;
             }
+        } catch {
+            // fall through to live API
+        }
 
-            const data = await response.json();
+        try {
+            // 2. Try live shelters API
+            const data = await getShelters();
 
-            if (Array.isArray(data.shelters)) {
+            if (data.live && Array.isArray(data.shelters)) {
                 setShelters(data.shelters);
                 setBackendConnected(true);
                 setLastUpdated(new Date());
+            } else {
+                setShelters(FALLBACK_SHELTERS);
+                setBackendConnected(false);
             }
-        } catch (error) {
-            console.log(
-                "Live shelter API unavailable. Using verified fallback data."
-            );
-
+        } catch {
             setShelters(FALLBACK_SHELTERS);
             setBackendConnected(false);
         } finally {
@@ -143,7 +142,61 @@ function Shelters() {
     };
 
     useEffect(() => {
-        fetchLiveShelters();
+        let current = true;
+
+        const loadShelters = async () => {
+            try {
+                // 1. Try bundled GeoJSON from backend
+                const file = await getBundledShelters();
+                const text = await file.text();
+                const geojson = JSON.parse(text);
+                const mapped = geoJsonToShelters(geojson);
+
+                if (!current) return;
+
+                if (mapped.length > 0) {
+                    setShelters(mapped);
+                    setBackendConnected(true);
+                    setLastUpdated(new Date());
+                    setLoading(false);
+                    return;
+                }
+            } catch {
+                // fall through to live API
+            }
+
+            try {
+                const data = await getShelters();
+
+                if (!current) {
+                    return;
+                }
+
+                if (data.live && Array.isArray(data.shelters)) {
+                    setShelters(data.shelters);
+                    setBackendConnected(true);
+                    setLastUpdated(new Date());
+                } else {
+                    setShelters(FALLBACK_SHELTERS);
+                    setBackendConnected(false);
+                }
+            } catch {
+                if (current) {
+                    setShelters(FALLBACK_SHELTERS);
+                    setBackendConnected(false);
+                }
+            } finally {
+                if (current) {
+                    setLoading(false);
+                }
+            }
+        };
+
+        loadShelters();
+
+        return () => {
+            current = false;
+        };
     }, []);
 
     const filteredShelters = shelters.filter((shelter) => {
@@ -190,11 +243,11 @@ function Shelters() {
                     <p>
                         Find rehabilitation and emergency
                         shelter locations for flood-affected
-                        residents in Vijayawada.
+                        residents in Patna.
                     </p>
                 </div>
 
-                <div className="system-time">
+                <div className={`system-time ${backendConnected ? "is-connected" : "is-verified"}`}>
 
                     <span
                         className={
@@ -206,7 +259,7 @@ function Shelters() {
 
                     {backendConnected
                         ? "Live Data Connected"
-                        : "Verified Data Mode"}
+                        : "Historical Listing Mode"}
 
                 </div>
 
@@ -219,7 +272,9 @@ function Shelters() {
             <div className="shelter-notice">
 
                 <div className="shelter-notice-icon">
-                    {backendConnected ? "✓" : "!"}
+                    {backendConnected
+                        ? <Icon name="check" size={18} />
+                        : <Icon name="info" size={18} />}
                 </div>
 
                 <div>
@@ -233,7 +288,7 @@ function Shelters() {
                     <p>
                         {backendConnected
                             ? "Shelter information below is being supplied by the HydroShield backend."
-                            : "Showing verified Vijayawada flood-relief locations. Current activation and occupancy must be confirmed with authorities."}
+                            : "Showing bundled Patna flood-relief listings. Current activation and occupancy must be confirmed with local authorities."}
                     </p>
 
                 </div>
@@ -245,7 +300,7 @@ function Shelters() {
                 >
                     {loading
                         ? "Refreshing..."
-                        : "↻ Refresh"}
+                        : <><Icon name="refresh" size={16} /> Refresh</>}
                 </button>
 
             </div>
@@ -259,11 +314,11 @@ function Shelters() {
                 <div className="shelter-stat-card">
 
                     <div className="shelter-stat-icon available">
-                        ✓
+                        <Icon name="check" size={19} />
                     </div>
 
                     <div>
-                        <span>Active / Listed</span>
+                        <span>Confirmed Active</span>
 
                         <strong>
                             {activeCount}
@@ -275,7 +330,7 @@ function Shelters() {
                 <div className="shelter-stat-card">
 
                     <div className="shelter-stat-icon total">
-                        🏠
+                        <Icon name="building" size={19} />
                     </div>
 
                     <div>
@@ -291,7 +346,7 @@ function Shelters() {
                 <div className="shelter-stat-card">
 
                     <div className="shelter-stat-icon total">
-                        ⚠
+                        <Icon name="alert" size={19} />
                     </div>
 
                     <div>
@@ -307,14 +362,14 @@ function Shelters() {
                 <div className="shelter-stat-card">
 
                     <div className="shelter-stat-icon available">
-                        📍
+                        <Icon name="pin" size={19} />
                     </div>
 
                     <div>
                         <span>City</span>
 
                         <strong>
-                            Vijayawada
+                            Patna
                         </strong>
                     </div>
 
@@ -332,7 +387,7 @@ function Shelters() {
 
                     <div>
                         <h3>
-                            Vijayawada Flood Relief Map
+                            Patna Flood Relief Map
                         </h3>
 
                         <p>
@@ -347,7 +402,7 @@ function Shelters() {
 
                         {backendConnected
                             ? "Live"
-                            : "Verified locations"}
+                            : "Historical locations"}
 
                     </div>
 
@@ -357,8 +412,8 @@ function Shelters() {
 
                     <MapContainer
                         center={[
-                            16.5062,
-                            80.6480,
+                            25.59,
+                            85.09,
                         ]}
                         zoom={13}
                         scrollWheelZoom={true}
@@ -441,7 +496,7 @@ function Shelters() {
                                         target="_blank"
                                         rel="noreferrer"
                                     >
-                                        🗺️ Get Directions
+                                        Get Directions
                                     </a>
 
                                 </Popup>
@@ -460,7 +515,7 @@ function Shelters() {
 
                         <div>
                             <span className="legend-dot active"></span>
-                            Active / Listed
+                            Listed
                         </div>
 
                         <div>
@@ -488,60 +543,31 @@ function Shelters() {
                             Flood Relief Centres
                         </h3>
 
-                        <p>
-                            Emergency locations identified
-                            for flood-affected residents.
-                        </p>
+                        <p>Historical locations; confirm availability before travel.</p>
 
                     </div>
 
                     <div className="shelter-search">
-
-                        🔍
-
+                        <Icon name="search" size={17} />
                         <input
                             type="text"
                             placeholder="Search centre or area..."
                             value={search}
-                            onChange={(event) =>
-                                setSearch(
-                                    event.target.value
-                                )
-                            }
+                            onChange={(event) => setSearch(event.target.value)}
                         />
-
                     </div>
-
                 </div>
 
-                {/* Filters */}
-
                 <div className="shelter-filters">
-
-                    {[
-                        "ALL",
-                        "ACTIVE",
-                        "VERIFY",
-                    ].map((status) => (
-
+                    {["ALL", "ACTIVE", "VERIFY"].map((status) => (
                         <button
                             key={status}
-                            className={
-                                filter === status
-                                    ? "shelter-filter active"
-                                    : "shelter-filter"
-                            }
-                            onClick={() =>
-                                setFilter(status)
-                            }
+                            className={filter === status ? "shelter-filter active" : "shelter-filter"}
+                            onClick={() => setFilter(status)}
                         >
-                            {status === "VERIFY"
-                                ? "VERIFY STATUS"
-                                : status}
+                            {status === "VERIFY" ? "VERIFY STATUS" : status}
                         </button>
-
                     ))}
-
                 </div>
 
                 {/* =================================================
@@ -561,7 +587,7 @@ function Shelters() {
                                 <div className="shelter-card-top">
 
                                     <div className="shelter-building">
-                                        🏠
+                                        <Icon name="building" size={20} />
                                     </div>
 
                                     <span
@@ -585,7 +611,7 @@ function Shelters() {
                                 </h3>
 
                                 <p className="shelter-location">
-                                    📍{" "}
+                                    <Icon name="pin" size={14} />
                                     {shelter.location}
                                 </p>
 
@@ -598,15 +624,15 @@ function Shelters() {
                                 <div className="shelter-facilities">
 
                                     <span>
-                                        🍱 Food
+                                        <Icon name="food" size={14} /> Food
                                     </span>
 
                                     <span>
-                                        💧 Water
+                                        <Icon name="droplet" size={14} /> Water
                                     </span>
 
                                     <span>
-                                        🏥 Medical
+                                        <Icon name="medical" size={14} /> Medical
                                     </span>
 
                                 </div>
@@ -674,7 +700,7 @@ function Shelters() {
                                 <div className="shelter-source">
 
                                     <span>
-                                        ℹ
+                                        <Icon name="info" size={14} />
                                     </span>
 
                                     <span>
@@ -696,14 +722,7 @@ function Shelters() {
                                         rel="noreferrer"
                                         className="shelter-map-button"
                                     >
-                                        🗺️ Directions
-                                    </a>
-
-                                    <a
-                                        href="tel:9154970454"
-                                        className="shelter-call-button"
-                                    >
-                                        📞 Emergency
+                                        <Icon name="map" size={15} /> Directions
                                     </a>
 
                                 </div>
@@ -722,7 +741,7 @@ function Shelters() {
                     <div className="no-shelters">
 
                         <div>
-                            🔍
+                            <Icon name="search" size={22} />
                         </div>
 
                         <h3>
@@ -748,40 +767,16 @@ function Shelters() {
                 <div>
 
                     <span className="emergency-icon">
-                        🚨
+                        <Icon name="alert" size={21} />
                     </span>
 
                     <div>
 
-                        <strong>
-                            Vijayawada Flood Emergency
-                        </strong>
+                        <strong>Confirm Current Shelter Status</strong>
 
-                        <p>
-                            Contact the district control
-                            room to confirm which relief
-                            centres are currently activated.
-                        </p>
+                        <p>No verified emergency phone contact is configured. Follow current local-authority instructions.</p>
 
                     </div>
-
-                </div>
-
-                <div className="emergency-buttons">
-
-                    <a
-                        href="tel:9154970454"
-                        className="emergency-call"
-                    >
-                        📞 91549 70454
-                    </a>
-
-                    <a
-                        href="tel:08662422400"
-                        className="emergency-vmc"
-                    >
-                        ☎ VMC
-                    </a>
 
                 </div>
 
@@ -793,7 +788,7 @@ function Shelters() {
 
                 {lastUpdated
                     ? `Last backend update: ${lastUpdated.toLocaleString()}`
-                    : "Live backend update not available — showing verified fallback locations"}
+                    : "No live backend update; historical locations are listed for reference"}
 
             </div>
 
