@@ -11,16 +11,15 @@ import {
 import L from "leaflet";
 import {
     findSafeRoute,
+    findSafeRouteBundled,
     getRasterInfo,
     preprocessSentinel1,
-    getBundledRaster,
-    getBundledRoads,
-    getBundledShelters,
 } from "../api";
 import Icon from "../components/Icon";
 
 import "leaflet/dist/leaflet.css";
 
+// ── Leaflet marker icons ───────────────────────────────────────────────────
 const startIcon = new L.Icon({
     iconUrl:
         "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png",
@@ -31,276 +30,186 @@ const startIcon = new L.Icon({
     shadowSize: [41, 41],
 });
 
-const defaultCenter = [25.59, 85.09];
+const shelterIcon = new L.Icon({
+    iconUrl:
+        "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png",
+    shadowUrl:
+        "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png",
+    iconSize: [25, 41],
+    iconAnchor: [12, 41],
+    shadowSize: [41, 41],
+});
 
+// Raster coverage centre: Bihar/Gaya region (lon 83.27–84.53, lat 24.15–25.14)
+const DEFAULT_CENTER = [24.647, 83.903];
+
+// ── Sub-components ─────────────────────────────────────────────────────────
 function LocationPicker({ onLocationSelect }) {
     useMapEvents({
-        click(event) {
-            onLocationSelect(
-                event.latlng.lat,
-                event.latlng.lng,
-                "map"
-            );
+        click(e) {
+            onLocationSelect(e.latlng.lat, e.latlng.lng);
         },
     });
-
     return null;
 }
 
 function RouteMapController({ route }) {
     const map = useMap();
-
     if (route && route.length > 1) {
-        const bounds = L.latLngBounds(route);
-
-        map.fitBounds(bounds, {
-            padding: [40, 40],
-        });
+        map.fitBounds(L.latLngBounds(route), { padding: [40, 40] });
     }
-
     return null;
 }
 
+// ══════════════════════════════════════════════════════════════════════════
 export default function Routing() {
-    const [rasterFile, setRasterFile] = useState(null);
-    const [roadsFile, setRoadsFile] = useState(null);
-    const [sheltersFile, setSheltersFile] = useState(null);
-    const [bandCount, setBandCount] = useState(1);
-    const [bandNames, setBandNames] = useState([]);
+    // ── routing mode ──────────────────────────────────────────────────────
+    // "bundled"  → server uses bundled datasets from disk (no upload)
+    // "custom"   → user uploads their own files
+    const [mode, setMode] = useState("bundled");
 
-    // Location is kept internally.
-    // The user does not need to enter coordinates.
-    const [userLocation, setUserLocation] = useState(null);
-    const [locationMethod, setLocationMethod] = useState("");
+    // ── location ──────────────────────────────────────────────────────────
+    const [userLocation,    setUserLocation]    = useState(null);
+    const [locationMethod,  setLocationMethod]  = useState("");
+    const [locating,        setLocating]        = useState(false);
 
-    const [band, setBand] = useState(1);
-    const [threshold, setThreshold] = useState(-17);
+    // ── custom-mode file state ─────────────────────────────────────────────
+    const [rasterFile,    setRasterFile]    = useState(null);
+    const [roadsFile,     setRoadsFile]     = useState(null);
+    const [sheltersFile,  setSheltersFile]  = useState(null);
+    const [bandCount,     setBandCount]     = useState(1);
+    const [bandNames,     setBandNames]     = useState([]);
+    const [preprocessing, setPreprocessing] = useState(false);
+
+    // ── shared analysis settings ──────────────────────────────────────────
+    const [band,       setBand]       = useState(1);
+    const [threshold,  setThreshold]  = useState(-17);
     const [valueScale, setValueScale] = useState("dB");
 
-    const [loading, setLoading] = useState(false);
-    const [preprocessing, setPreprocessing] = useState(false);
-    const [locating, setLocating] = useState(false);
-    const [bundledLoading, setBundledLoading] = useState(false);
+    // ── result state ──────────────────────────────────────────────────────
+    const [loading,  setLoading]  = useState(false);
+    const [result,   setResult]   = useState(null);
+    const [error,    setError]    = useState("");
 
-    const [result, setResult] = useState(null);
-    const [error, setError] = useState("");
-    const [invalidRaster, setInvalidRaster] = useState(false);
+    // ── GPS location ──────────────────────────────────────────────────────
+    const useCurrentLocation = () => {
+        setError("");
+        setResult(null);
+        if (!navigator.geolocation) {
+            setError("Location services are not supported by this browser.");
+            return;
+        }
+        setLocating(true);
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                setUserLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
+                setLocationMethod("gps");
+                setLocating(false);
+            },
+            (err) => {
+                setLocating(false);
+                const msgs = {
+                    1: "Location permission denied. Click the map to set your location.",
+                    2: "Location unavailable. Click the map to set your location.",
+                    3: "Location timed out. Click the map to set your location.",
+                };
+                setError(msgs[err.code] || "Could not detect location.");
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+        );
+    };
 
-    const handleRasterChange = async (event) => {
-        const selectedFile = event.target.files?.[0] || null;
+    const selectMapLocation = (lat, lng) => {
+        setUserLocation({ latitude: lat, longitude: lng });
+        setLocationMethod("map");
+        setError("");
+        setResult(null);
+    };
+
+    // ── custom raster change ──────────────────────────────────────────────
+    const handleRasterChange = async (e) => {
+        const f = e.target.files?.[0] || null;
         setRasterFile(null);
         setBand(1);
         setBandCount(1);
         setBandNames([]);
         setResult(null);
         setError("");
-        setInvalidRaster(false);
-
-        if (!selectedFile) {
-            return;
-        }
-
+        if (!f) return;
         try {
-            let raster = selectedFile;
-            if (selectedFile.name.toLowerCase().endsWith(".zip")) {
+            let raster = f;
+            if (f.name.toLowerCase().endsWith(".zip")) {
                 setPreprocessing(true);
-                raster = await preprocessSentinel1(selectedFile);
+                raster = await preprocessSentinel1(f);
             }
             const info = await getRasterInfo(raster);
             setRasterFile(raster);
             setBandCount(info.bands);
             setBandNames(info.descriptions || []);
-        } catch (requestError) {
-            setError(requestError.message || "Could not inspect raster.");
+        } catch (err) {
+            setError(err.message || "Could not inspect raster.");
         } finally {
             setPreprocessing(false);
         }
     };
 
-    // -----------------------------------------
-    // USE BUNDLED DATASETS
-    // -----------------------------------------
-    const handleUseBundled = async () => {
-        setBundledLoading(true);
-        setError("");
-        setResult(null);
-        setInvalidRaster(false);
-        try {
-            const [raster, roads, shelters] = await Promise.all([
-                getBundledRaster(),
-                getBundledRoads(),
-                getBundledShelters(),
-            ]);
-            setRoadsFile(roads);
-            setSheltersFile(shelters);
-            // Inspect raster metadata
-            const info = await getRasterInfo(raster);
-            setRasterFile(raster);
-            setBandCount(info.bands);
-            setBandNames(info.descriptions || []);
-            setBand(1);
-        } catch (e) {
-            setError(e.message || "Could not load bundled datasets.");
-        } finally {
-            setBundledLoading(false);
-        }
-    };
-
-    // -----------------------------------------
-    // GET CURRENT GPS LOCATION
-    // -----------------------------------------
-    const useCurrentLocation = () => {
-        setError("");
-        setResult(null);
-
-        if (!navigator.geolocation) {
-            setError(
-                "Location services are not supported by this browser."
-            );
-            return;
-        }
-
-        setLocating(true);
-
-        navigator.geolocation.getCurrentPosition(
-            (position) => {
-                const latitude = position.coords.latitude;
-                const longitude = position.coords.longitude;
-
-                setUserLocation({
-                    latitude,
-                    longitude,
-                });
-
-                setLocationMethod("gps");
-                setLocating(false);
-            },
-            (geoError) => {
-                setLocating(false);
-
-                let message =
-                    "Unable to detect your location.";
-
-                if (geoError.code === 1) {
-                    message =
-                        "Location permission was denied. Please allow location access or select your location on the map.";
-                } else if (geoError.code === 2) {
-                    message =
-                        "Your location could not be determined. Please select your location on the map.";
-                } else if (geoError.code === 3) {
-                    message =
-                        "Location request timed out. Please try again or select your location on the map.";
-                }
-
-                setError(message);
-            },
-            {
-                enableHighAccuracy: true,
-                timeout: 10000,
-                maximumAge: 30000,
-            }
-        );
-    };
-
-    // -----------------------------------------
-    // MAP LOCATION SELECTION
-    // -----------------------------------------
-    const selectMapLocation = (
-        latitude,
-        longitude
-    ) => {
-        setUserLocation({
-            latitude,
-            longitude,
-        });
-
-        setLocationMethod("map");
-        setError("");
-        setResult(null);
-    };
-
-    // -----------------------------------------
-    // FIND SAFE ROUTE
-    // -----------------------------------------
+    // ── find route ────────────────────────────────────────────────────────
     const handleFindRoute = async () => {
         setError("");
         setResult(null);
 
         if (!userLocation) {
-            setError(
-                "Please detect your location or select your location on the map."
-            );
+            setError("Please detect or click your location on the map first.");
             return;
         }
 
-        if (!rasterFile) {
-            setError(
-                "Please upload a Sentinel-1 GeoTIFF flood raster."
-            );
-            return;
-        }
-
-        if (!roadsFile) {
-            setError(
-                "Please upload the road network dataset."
-            );
-            return;
-        }
-
-        if (!sheltersFile) {
-            setError(
-                "Please upload the shelter dataset."
-            );
-            return;
-        }
-
+        setLoading(true);
         try {
-            setLoading(true);
-
-            const data = await findSafeRoute({
-                rasterFile,
-                roadsFile,
-                sheltersFile,
-                latitude: userLocation.latitude,
-                longitude: userLocation.longitude,
-                band,
-                threshold,
-                valueScale,
-            });
-
+            let data;
+            if (mode === "bundled") {
+                // ✅ No file upload — server reads all datasets from disk
+                data = await findSafeRouteBundled({
+                    latitude:   userLocation.latitude,
+                    longitude:  userLocation.longitude,
+                    band,
+                    threshold,
+                    valueScale,
+                });
+            } else {
+                // Custom mode — user-supplied files
+                if (!rasterFile)   { setError("Upload a flood raster."); setLoading(false); return; }
+                if (!roadsFile)    { setError("Upload a road network dataset."); setLoading(false); return; }
+                if (!sheltersFile) { setError("Upload a shelter dataset."); setLoading(false); return; }
+                data = await findSafeRoute({
+                    rasterFile,
+                    roadsFile,
+                    sheltersFile,
+                    latitude:   userLocation.latitude,
+                    longitude:  userLocation.longitude,
+                    band,
+                    threshold,
+                    valueScale,
+                });
+            }
             setResult(data);
         } catch (err) {
-            const hasNoBackscatter = err.message?.includes(
-                "All valid raster pixels are zero"
-            );
-            setInvalidRaster(Boolean(hasNoBackscatter));
-            setError(hasNoBackscatter
-                ? "This GeoTIFF contains only zero values. Upload a validated Sentinel-1 backscatter raster before calculating a route."
-                : err.message || "Safe route calculation failed.");
+            setError(err.message || "Safe route calculation failed.");
         } finally {
             setLoading(false);
         }
     };
 
-    const routeCoordinates = result?.route || [];
-
+    // ── derived map values ─────────────────────────────────────────────────
+    const routeCoords   = result?.route || [];
     const startPosition = userLocation
-        ? [
-              userLocation.latitude,
-              userLocation.longitude,
-          ]
+        ? [userLocation.latitude, userLocation.longitude]
         : null;
-
     const shelterPosition = result?.shelter
-        ? [
-              result.shelter.latitude,
-              result.shelter.longitude,
-          ]
+        ? [result.shelter.latitude, result.shelter.longitude]
         : null;
+    const mapCenter = startPosition || DEFAULT_CENTER;
 
-    const mapCenter =
-        startPosition || defaultCenter;
-
+    // ══════════════════════════════════════════════════════════════════════
     return (
         <div className="page-container routing-page">
 
@@ -308,714 +217,401 @@ export default function Routing() {
             <div className="page-header">
                 <div>
                     <h1>Safe Routing</h1>
-
-                    <p>
-                        Find a flood-aware route to a
-                        reachable emergency shelter.
-                    </p>
+                    <p>Find a flood-aware route to a reachable emergency shelter.</p>
                 </div>
-
                 <div className="page-status">
                     <span className="status-dot"></span>
-                    Flood-aware routing
+                    Flood-aware routing · Bihar/Gaya
                 </div>
             </div>
 
             <div className="routing-layout">
 
-                {/* =====================================
+                {/* =========================================================
                     LEFT CONTROL PANEL
-                ===================================== */}
+                ========================================================= */}
                 <div className="routing-panel">
 
                     <div className="panel-title">
-
                         <div className="panel-icon">
                             <Icon name="route" size={24} />
                         </div>
-
                         <div>
                             <h2>Emergency Route</h2>
-
-                            <p>
-                                Get directions to a
-                                reachable shelter.
-                            </p>
+                            <p>Get directions to a reachable shelter.</p>
                         </div>
-
                     </div>
 
-
-                    {/* =================================
-                        LOCATION
-                    ================================= */}
+                    {/* ── Mode selector ──────────────────────────────────── */}
                     <div className="form-section">
+                        <h3><Icon name="layers" size={17} /> Dataset Mode</h3>
 
+                        <div className="mode-toggle">
+                            <button
+                                className={`mode-btn${mode === "bundled" ? " active" : ""}`}
+                                onClick={() => { setMode("bundled"); setResult(null); setError(""); }}
+                            >
+                                <Icon name="pin" size={15} />
+                                Bundled (Patna)
+                            </button>
+                            <button
+                                className={`mode-btn${mode === "custom" ? " active" : ""}`}
+                                onClick={() => { setMode("custom"); setResult(null); setError(""); }}
+                            >
+                                <Icon name="upload" size={15} />
+                                Custom Upload
+                            </button>
+                        </div>
+
+                        {mode === "bundled" && (
+                            <div className="bundled-info-box" style={{marginTop:"10px"}}>
+                                <Icon name="layers" size={17} />
+                                <div>
+                                    <strong>Bihar SAR bundled datasets</strong>
+                                    <span>
+                                        SAR raster (Gaya/Bihar region) · roads · shelters — all
+                                        read directly on the server.
+                                        Click the map in the <strong>Bihar region</strong> (lat 24–25, lon 83–85) to set your start.
+                                    </span>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* ── Location ───────────────────────────────────────── */}
+                    <div className="form-section">
                         <h3><Icon name="pin" size={17} /> Your Location</h3>
-
                         <p className="location-help">
-                            You don't need to know your
-                            latitude or longitude.
+                            Use your GPS or click anywhere on the map.
                         </p>
 
-
-                        {/* GPS BUTTON */}
                         <button
                             className="location-button"
-                            onClick={
-                                useCurrentLocation
-                            }
+                            onClick={useCurrentLocation}
                             disabled={locating}
                         >
-                            <span>
-                                {locating
-                                    ? <span className="icon-spinner" aria-hidden="true" />
-                                    : <Icon name="pin" size={17} />}
-                            </span>
-
                             {locating
-                                ? "Detecting your location..."
-                                : "Use My Current Location"}
+                                ? <span className="icon-spinner" aria-hidden="true" />
+                                : <Icon name="pin" size={17} />}
+                            {locating ? "Detecting location…" : "Use My Current Location"}
                         </button>
 
-
-                        {/* LOCATION STATUS */}
                         {userLocation && (
                             <div className="location-detected">
-
                                 <div className="location-check">
                                     <Icon name="check" size={15} />
                                 </div>
-
                                 <div>
-                                    <strong>Location detected</strong>
+                                    <strong>Location set</strong>
                                     <small>
-                                        {locationMethod ===
-                                        "gps"
-                                            ? "Using your device location"
-                                            : "Location selected on map"}
+                                        {locationMethod === "gps"
+                                            ? `GPS · ${userLocation.latitude.toFixed(5)}, ${userLocation.longitude.toFixed(5)}`
+                                            : `Map click · ${userLocation.latitude.toFixed(5)}, ${userLocation.longitude.toFixed(5)}`}
                                     </small>
                                 </div>
-
                             </div>
                         )}
 
-
-                        <div className="location-divider">
-                            <span>OR</span>
-                        </div>
-
+                        <div className="location-divider"><span>OR</span></div>
 
                         <div className="map-selection-hint">
-
-                            <span className="map-hint-icon">
-                                <Icon name="map" size={19} />
-                            </span>
-
+                            <span className="map-hint-icon"><Icon name="map" size={19} /></span>
                             <div>
-                                <strong>
-                                    Select your location
-                                </strong>
-
-                                <small>
-                                    Click anywhere on the
-                                    map to set your starting
-                                    point.
-                                </small>
+                                <strong>Click on the map</strong>
+                                <small>Tap anywhere on the map to set your starting point.</small>
                             </div>
-
                         </div>
-
                     </div>
 
-
-                    {/* =================================
-                        BUNDLED DATASETS
-                    ================================= */}
+                    {/* ── Flood detection settings ───────────────────────── */}
                     <div className="form-section">
-                        <h3><Icon name="layers" size={17} /> Bundled Datasets</h3>
-                        <p style={{fontSize: "0.85rem", color: "#64748b", marginBottom: 12}}>
-                            Automatically load the bundled Patna SAR raster, road network, and shelter dataset.
-                        </p>
-                        <button
-                            className="location-button"
-                            style={{background: bundledLoading ? undefined : "#1d4ed8", color: "#fff"}}
-                            onClick={handleUseBundled}
-                            disabled={bundledLoading}
-                        >
-                            {bundledLoading
-                                ? <><span className="icon-spinner" aria-hidden="true" /> Loading datasets...</>
-                                : <><Icon name="layers" size={17} /> Use Bundled Datasets</>}
-                        </button>
-                        {rasterFile && roadsFile && sheltersFile && !bundledLoading && (
-                            <div className="location-detected" style={{marginTop: 8}}>
-                                <div className="location-check"><Icon name="check" size={15} /></div>
-                                <div><strong>All datasets loaded</strong><small>Bundled Patna SAR, roads, and shelters ready.</small></div>
-                            </div>
-                        )}
-                    </div>
-
-
-                    {/* =================================
-                        FLOOD RASTER
-                    ================================= */}
-                    <div className="form-section">
-
-                        <h3><Icon name="layers" size={17} /> Flood Raster</h3>
-
-                        <label className="file-upload">
-
-                            <input
-                                type="file"
-                                accept=".tif,.tiff,.zip"
-                                onChange={handleRasterChange}
-                            />
-
-                            <span className="upload-icon">
-                                <Icon name="upload" size={18} />
-                            </span>
-
-                            <span>
-                                {rasterFile
-                                    ? rasterFile.name
-                                    : preprocessing
-                                    ? "Preprocessing Sentinel-1 with SNAP..."
-                                    : "Choose GeoTIFF or zipped GRD SAFE"}
-                            </span>
-
-                        </label>
-
-                        <small>
-                            Zipped GRD SAFE products are preprocessed with SNAP GPT.
-                            GeoTIFFs must already contain calibrated backscatter.
-                        </small>
-
-                    </div>
-
-
-                    {/* =================================
-                        ROAD NETWORK
-                    ================================= */}
-                    <div className="form-section">
-
-                        <h3><Icon name="route" size={17} /> Road Network</h3>
-
-                        <label className="file-upload">
-
-                            <input
-                                type="file"
-                                accept=".geojson,.json,.gpkg,.zip"
-                                onChange={(e) =>
-                                    setRoadsFile(
-                                        e.target.files?.[0] ||
-                                            null
-                                    )
-                                }
-                            />
-
-                            <span className="upload-icon">
-                                <Icon name="upload" size={18} />
-                            </span>
-
-                            <span>
-                                {roadsFile
-                                    ? roadsFile.name
-                                    : "Choose road dataset"}
-                            </span>
-
-                        </label>
-
-                        <small>
-                            GeoJSON, GPKG or Shapefile ZIP
-                            with CRS metadata.
-                        </small>
-
-                    </div>
-
-
-                    {/* =================================
-                        SHELTERS
-                    ================================= */}
-                    <div className="form-section">
-
-                        <h3><Icon name="building" size={17} /> Emergency Shelters</h3>
-
-                        <label className="file-upload">
-
-                            <input
-                                type="file"
-                                accept=".geojson,.json,.gpkg,.zip"
-                                onChange={(e) =>
-                                    setSheltersFile(
-                                        e.target.files?.[0] ||
-                                            null
-                                    )
-                                }
-                            />
-
-                            <span className="upload-icon">
-                                <Icon name="upload" size={18} />
-                            </span>
-
-                            <span>
-                                {sheltersFile
-                                    ? sheltersFile.name
-                                    : "Choose shelter dataset"}
-                            </span>
-
-                        </label>
-
-                        <small>
-                            Shelter points must include
-                            CRS metadata.
-                        </small>
-
-                    </div>
-
-
-                    {/* =================================
-                        FLOOD SETTINGS
-                    ================================= */}
-                    <div className="form-section">
-
                         <h3><Icon name="droplet" size={17} /> Flood Detection</h3>
 
                         <div className="coordinate-grid">
-
+                            {mode === "custom" && (
+                                <div className="form-group">
+                                    <label>Band</label>
+                                    <select
+                                        value={band}
+                                        onChange={(e) => { setBand(Number(e.target.value)); setResult(null); }}
+                                    >
+                                        {Array.from({ length: bandCount }, (_, i) => (
+                                            <option key={i + 1} value={i + 1}>
+                                                {bandNames[i] && bandNames[i] !== `Band ${i + 1}`
+                                                    ? `Band ${i + 1} · ${bandNames[i]}`
+                                                    : `Band ${i + 1}`}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                            )}
                             <div className="form-group">
-
-                                <label>
-                                    Band
-                                </label>
-
-                                <select
-                                    value={band}
-                                    onChange={(event) => {
-                                        setBand(Number(event.target.value));
-                                        setResult(null);
-                                        setError("");
-                                        setInvalidRaster(false);
-                                    }}
-                                >
-                                    {Array.from({ length: bandCount }, (_, index) => (
-                                        <option key={index + 1} value={index + 1}>
-                                            {bandNames[index] &&
-                                            bandNames[index] !== `Band ${index + 1}`
-                                                ? `Band ${index + 1} · ${bandNames[index]}`
-                                                : `Band ${index + 1}`}
-                                        </option>
-                                    ))}
-                                </select>
-
-                            </div>
-
-
-                            <div className="form-group">
-
-                                <label>
-                                    Value Scale
-                                </label>
-
+                                <label>Value Scale</label>
                                 <select
                                     value={valueScale}
-                                    onChange={(e) =>
-                                        setValueScale(
-                                            e.target.value
-                                        )
-                                    }
+                                    onChange={(e) => setValueScale(e.target.value)}
                                 >
-                                    <option value="dB">
-                                        dB
-                                    </option>
-
-                                    <option value="Linear power">
-                                        Linear Power
-                                    </option>
+                                    <option value="dB">dB</option>
+                                    <option value="Linear power">Linear Power</option>
                                 </select>
-
                             </div>
-
                         </div>
 
-
                         <div className="form-group threshold-group">
-
                             <label>
-                                Flood Threshold:{" "}
-                                <strong>
-                                    {threshold} dB
-                                </strong>
+                                Flood Threshold: <strong>{threshold} dB</strong>
                             </label>
-
                             <input
                                 type="range"
                                 min="-30"
                                 max="-5"
                                 step="0.5"
                                 value={threshold}
-                                onChange={(e) =>
-                                    setThreshold(
-                                        Number(
-                                            e.target.value
-                                        )
-                                    )
-                                }
+                                onChange={(e) => setThreshold(Number(e.target.value))}
                             />
-
                             <div className="range-labels">
-
-                                <span>
-                                    -30 dB
-                                </span>
-
-                                <span>
-                                    -5 dB
-                                </span>
-
+                                <span>−30 dB</span>
+                                <span>−5 dB</span>
                             </div>
-
                         </div>
-
                     </div>
 
+                    {/* ── Custom file uploads (only in custom mode) ──────── */}
+                    {mode === "custom" && (
+                        <div className="form-section">
+                            <h3><Icon name="upload" size={17} /> Custom Datasets</h3>
 
-                    {/* ERROR */}
-                    {error && (
-                        <div className="route-error">
+                            <div className="form-group">
+                                <label>Flood Raster (GeoTIFF or zipped GRD SAFE)</label>
+                                <label className="file-upload">
+                                    <input
+                                        type="file"
+                                        accept=".tif,.tiff,.zip"
+                                        onChange={handleRasterChange}
+                                    />
+                                    <span className="upload-icon"><Icon name="upload" size={18} /></span>
+                                    <span>
+                                        {rasterFile ? rasterFile.name
+                                            : preprocessing ? "Preprocessing with SNAP…"
+                                            : "Choose GeoTIFF or zipped GRD SAFE"}
+                                    </span>
+                                </label>
+                                <small>
+                                    Only use small GeoTIFFs (&lt;200 MB). For the
+                                    1.4 GB Patna dataset use Bundled mode above.
+                                </small>
+                            </div>
 
-                            <strong>
-                                <Icon name="alert" size={17} /> {invalidRaster ? "Raster Data Notice" : "Routing Notice"}
-                            </strong>
+                            <div className="form-group">
+                                <label>Road Network</label>
+                                <label className="file-upload">
+                                    <input
+                                        type="file"
+                                        accept=".geojson,.json,.gpkg,.zip"
+                                        onChange={(e) => setRoadsFile(e.target.files?.[0] || null)}
+                                    />
+                                    <span className="upload-icon"><Icon name="upload" size={18} /></span>
+                                    <span>{roadsFile ? roadsFile.name : "Choose road dataset"}</span>
+                                </label>
+                            </div>
 
-                            <span>
-                                {error}
-                            </span>
-
+                            <div className="form-group">
+                                <label>Emergency Shelters</label>
+                                <label className="file-upload">
+                                    <input
+                                        type="file"
+                                        accept=".geojson,.json,.gpkg,.zip"
+                                        onChange={(e) => setSheltersFile(e.target.files?.[0] || null)}
+                                    />
+                                    <span className="upload-icon"><Icon name="upload" size={18} /></span>
+                                    <span>{sheltersFile ? sheltersFile.name : "Choose shelter dataset"}</span>
+                                </label>
+                            </div>
                         </div>
                     )}
 
+                    {/* ── Error ─────────────────────────────────────────── */}
+                    {error && (
+                        <div className="route-error">
+                            <strong><Icon name="alert" size={17} /> Notice</strong>
+                            <span>{error}</span>
+                        </div>
+                    )}
 
-                    {/* FIND ROUTE */}
+                    {/* ── Find Route button ─────────────────────────────── */}
                     <button
                         className="find-route-button"
                         onClick={handleFindRoute}
-                        disabled={loading || preprocessing || invalidRaster}
+                        disabled={loading || preprocessing}
                     >
                         {loading
-                            ? "Calculating Safe Route..."
-                            : "Find Safe Route"}
+                            ? "Calculating Safe Route…"
+                            : mode === "bundled"
+                            ? "▶ Find Safe Route (Bundled)"
+                            : "▶ Find Safe Route (Custom)"}
                     </button>
 
-
-                    <p className="routing-note">
-                        HydroShield screens the road network
-                        against the supplied flood classification
-                        before selecting a reachable shelter.
+                    <p>
+                        {mode === "bundled"
+                            ? "HydroShield analyses the Bihar SAR raster directly on the server — no file upload needed."
+                            : "HydroShield screens the road network against the uploaded flood raster before selecting a shelter."}
                     </p>
+                    {mode === "bundled" && !userLocation && (
+                        <p className="routing-note" style={{marginTop: 6, color: "#2563eb", fontWeight: 600}}>
+                            📍 Click anywhere in the Bihar region (lat 24.1–25.1, lon 83.3–84.5) on the map to set your start point.
+                        </p>
+                    )}
 
                 </div>
 
-
-                {/* =====================================
+                {/* =========================================================
                     RIGHT MAP
-                ===================================== */}
+                ========================================================= */}
                 <div className="routing-map-section">
 
                     <div className="map-header">
-
                         <div>
-
-                            <h2>
-                                Flood-Aware Route Map
-                            </h2>
-
-                            <p>
-                                Click the map to select your
-                                starting location.
-                            </p>
-
+                            <h2>Flood-Aware Route Map</h2>
+                            <p>Click the map to set your starting location.</p>
                         </div>
-
-
                         {result?.success && (
                             <div className="route-success-badge">
-
                                 <span className="status-dot"></span>
-
                                 Route calculated
-
                             </div>
                         )}
-
                     </div>
 
-
                     <div className="routing-map">
-
                         <MapContainer
                             center={mapCenter}
                             zoom={12}
                             scrollWheelZoom={true}
-                            style={{
-                                width: "100%",
-                                height: "100%",
-                            }}
+                            style={{ width: "100%", height: "100%" }}
                         >
-
                             <TileLayer
                                 attribution="&copy; OpenStreetMap contributors"
                                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                             />
 
+                            <LocationPicker onLocationSelect={selectMapLocation} />
 
-                            {/* MAP CLICK LOCATION */}
-                            <LocationPicker
-                                onLocationSelect={
-                                    selectMapLocation
-                                }
-                            />
-
-
-                            {/* USER LOCATION */}
                             {startPosition && (
-                                <Marker
-                                    position={
-                                        startPosition
-                                    }
-                                    icon={startIcon}
-                                >
+                                <Marker position={startPosition} icon={startIcon}>
                                     <Popup>
-
-                                        <strong>
-                                            Your Starting
-                                            Location
-                                        </strong>
-
+                                        <strong>Your Starting Location</strong>
                                         <br />
-
-                                        {locationMethod ===
-                                        "gps"
-                                            ? "Detected from your device"
+                                        {locationMethod === "gps"
+                                            ? "Detected from device GPS"
                                             : "Selected on map"}
-
                                     </Popup>
-
                                 </Marker>
                             )}
 
-
-                            {/* SHELTER */}
                             {shelterPosition && (
-                                <Marker
-                                    position={
-                                        shelterPosition
-                                    }
-                                >
+                                <Marker position={shelterPosition} icon={shelterIcon}>
                                     <Popup>
-
-                                        <strong>
-                                            {
-                                                result
-                                                    .shelter
-                                                    .name
-                                            }
-                                        </strong>
-
+                                        <strong>{result.shelter.name}</strong>
                                         <br />
-
-                                        Reachable emergency
-                                        shelter
-
+                                        Reachable emergency shelter
                                     </Popup>
                                 </Marker>
                             )}
 
-
-                            {/* ROUTE */}
-                            {routeCoordinates.length >
-                                1 && (
+                            {routeCoords.length > 1 && (
                                 <>
                                     <Polyline
-                                        positions={
-                                            routeCoordinates
-                                        }
+                                        positions={routeCoords}
                                         pathOptions={{
-                                            color:
-                                                "#16a34a",
+                                            color: "#16a34a",
                                             weight: 7,
                                             opacity: 0.9,
                                         }}
                                     />
-
-                                    <RouteMapController
-                                        route={
-                                            routeCoordinates
-                                        }
-                                    />
+                                    <RouteMapController route={routeCoords} />
                                 </>
                             )}
-
                         </MapContainer>
 
-
-                        {/* EMPTY MAP */}
-                        {!userLocation &&
-                            !loading && (
-                                <div className="map-empty-state">
-
-                                    <div>
-                                        <Icon name="pin" size={34} />
-                                    </div>
-
-                                    <h3>
-                                        Set your location
-                                    </h3>
-
-                                    <p>
-                                        Click on the map or
-                                        use your device
-                                        location.
-                                    </p>
-
-                                </div>
-                            )}
-
-
-                        {/* LOADING */}
-                        {loading && (
-                            <div className="map-loading-state">
-
-                                <div className="loading-spinner"></div>
-
-                                <strong>
-                                    Finding a safe route...
-                                </strong>
-
-                                <span>
-                                    Analyzing flooded and
-                                    reachable roads
-                                </span>
-
+                        {/* Empty state */}
+                        {!userLocation && !loading && (
+                            <div className="map-empty-state">
+                                <div><Icon name="pin" size={34} /></div>
+                                <h3>Set your location</h3>
+                                <p>
+                                    Click on the map or use your device
+                                    location to get started.
+                                </p>
                             </div>
                         )}
 
+                        {/* Loading overlay */}
+                        {loading && (
+                            <div className="map-loading-state">
+                                <div className="loading-spinner"></div>
+                                <strong>Finding a safe route…</strong>
+                                <span>Analysing flooded roads and reachable shelters</span>
+                            </div>
+                        )}
                     </div>
 
-
-                    {/* =================================
-                        ROUTE RESULTS
-                    ================================= */}
+                    {/* ── Route results ──────────────────────────────────── */}
                     {result?.success && (
                         <div className="route-results">
 
                             <div className="result-card">
-
                                 <span className="result-icon">
                                     <Icon name="ruler" size={21} />
                                 </span>
-
                                 <div>
-
-                                    <small>
-                                        Route Distance
-                                    </small>
-
+                                    <small>Route Distance</small>
                                     <strong>
-                                        {result.distance_m >=
-                                        1000
-                                            ? `${(
-                                                  result.distance_m /
-                                                  1000
-                                              ).toFixed(
-                                                  2
-                                              )} km`
-                                            : `${Math.round(
-                                                  result.distance_m
-                                              )} m`}
+                                        {result.distance_m >= 1000
+                                            ? `${(result.distance_m / 1000).toFixed(2)} km`
+                                            : `${Math.round(result.distance_m)} m`}
                                     </strong>
-
                                 </div>
-
                             </div>
-
 
                             <div className="result-card">
-
                                 <span className="result-icon">
-                                    <Icon name="route" size={21} />
+                                    <Icon name="alert" size={21} />
                                 </span>
-
                                 <div>
-
-                                    <small>
-                                        Affected Roads
-                                    </small>
-
-                                    <strong>
-                                        {
-                                            result.affected_roads
-                                        }
-                                    </strong>
-
+                                    <small>Flooded Roads Avoided</small>
+                                    <strong>{result.affected_roads}</strong>
                                 </div>
-
                             </div>
 
-
                             <div className="result-card shelter-result">
-
                                 <span className="result-icon">
                                     <Icon name="building" size={21} />
                                 </span>
-
                                 <div>
-
-                                    <small>
-                                        Reachable Shelter
-                                    </small>
-
-                                    <strong>
-                                        {
-                                            result.shelter
-                                                .name
-                                        }
-                                    </strong>
-
+                                    <small>Reachable Shelter</small>
+                                    <strong>{result.shelter.name}</strong>
                                 </div>
-
                             </div>
 
                         </div>
                     )}
 
-
-                    {/* NO ROUTE */}
-                    {result &&
-                        !result.success && (
-                            <div className="no-route-result">
-
-                                <div>
-                                    <Icon name="alert" size={23} />
-                                </div>
-
-                                <div>
-
-                                    <strong>
-                                        No safe reachable
-                                        shelter found
-                                    </strong>
-
-                                    <p>
-                                        {result.message}
-                                    </p>
-
-                                </div>
-
+                    {/* No route found */}
+                    {result && !result.success && (
+                        <div className="no-route-result">
+                            <div><Icon name="alert" size={23} /></div>
+                            <div>
+                                <strong>No safe reachable shelter found</strong>
+                                <p>{result.message}</p>
+                                <small>
+                                    Try selecting a different starting location
+                                    or adjusting the flood threshold.
+                                </small>
                             </div>
-                        )}
+                        </div>
+                    )}
 
                 </div>
-
             </div>
         </div>
     );

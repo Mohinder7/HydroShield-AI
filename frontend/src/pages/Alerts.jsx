@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import Icon from "../components/Icon";
-import { detectFlood, getBundledRaster } from "../api";
+import { detectFloodBundled } from "../api";
 
 function generateAlerts(riskLevel, floodPct, floodAreaKm2) {
     const now = new Date();
@@ -53,8 +53,7 @@ function Alerts() {
         let cancelled = false;
         async function load() {
             try {
-                const rasterFile = await getBundledRaster();
-                const data = await detectFlood(rasterFile, 1, -17, "dB");
+                const data = await detectFloodBundled(1, -17, "dB");
                 if (!cancelled) {
                     setAlerts(generateAlerts(data.risk?.level, data.flooded_percentage, data.flooded_area_km2));
                 }

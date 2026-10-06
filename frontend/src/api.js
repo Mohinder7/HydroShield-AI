@@ -163,33 +163,100 @@ export async function askAssistant(message, history = []) {
     return data;
 }
 
-export async function getBundledRaster() {
-    const response = await fetch(`${API_URL}/datasets/raster`);
-    if (!response.ok) {
-        throw new Error("Could not load bundled raster");
-    }
-    const blob = await response.blob();
-    return new File([blob], "peak_flood_subset.tif", { type: "image/tiff" });
-}
+// ─── Bundled dataset file downloads (only use for small files) ───────────────
 
 export async function getBundledRoads() {
     const response = await fetch(`${API_URL}/datasets/roads`);
-    if (!response.ok) {
-        throw new Error("Could not load bundled roads");
-    }
+    if (!response.ok) throw new Error("Could not load bundled roads");
     const blob = await response.blob();
     return new File([blob], "patna_roads.geojson", { type: "application/json" });
 }
 
 export async function getBundledShelters() {
     const response = await fetch(`${API_URL}/datasets/shelters`);
-    if (!response.ok) {
-        throw new Error("Could not load bundled shelters");
-    }
+    if (!response.ok) throw new Error("Could not load bundled shelters");
     const blob = await response.blob();
     return new File([blob], "patna_shelters.geojson", { type: "application/json" });
 }
 
+// NOTE: getBundledRaster() intentionally removed — the SAR file is 1.4 GB and
+// cannot be transferred through the browser. Use the server-side bundled
+// endpoints below instead (they read from disk directly).
+
+// ─── Server-side bundled analysis (no file upload) ───────────────────────────
+
+/**
+ * Run threshold flood detection on the bundled SAR raster (server reads from disk).
+ * No file upload — works regardless of raster file size.
+ */
+export async function detectFloodBundled(
+    band = 1,
+    threshold = -17,
+    valueScale = "dB"
+) {
+    const formData = new FormData();
+    formData.append("band", band);
+    formData.append("threshold", threshold);
+    formData.append("value_scale", valueScale);
+
+    const response = await fetch(`${API_URL}/flood/detect-bundled`, {
+        method: "POST",
+        body: formData,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Bundled flood detection failed");
+    return data;
+}
+
+/**
+ * Run multi-feature Random Forest on the bundled SAR raster (server reads from disk).
+ * No file upload — works regardless of raster file size.
+ */
+export async function runRFPretrainedBundled(band = 1, valueScale = "dB") {
+    const formData = new FormData();
+    formData.append("band", band);
+    formData.append("value_scale", valueScale);
+
+    const response = await fetch(`${API_URL}/flood/rf-pretrained-bundled`, {
+        method: "POST",
+        body: formData,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Bundled RF detection failed");
+    return data;
+}
+
+/**
+ * Find safe route using bundled datasets (server reads from disk).
+ * Only needs latitude and longitude — no file uploads.
+ */
+export async function findSafeRouteBundled({
+    latitude,
+    longitude,
+    band = 1,
+    threshold = -17,
+    valueScale = "dB",
+}) {
+    const formData = new FormData();
+    formData.append("latitude", latitude);
+    formData.append("longitude", longitude);
+    formData.append("band", band);
+    formData.append("threshold", threshold);
+    formData.append("value_scale", valueScale);
+
+    const response = await fetch(`${API_URL}/routing/find-bundled`, {
+        method: "POST",
+        body: formData,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Bundled routing failed");
+    return data;
+}
+
+/**
+ * Run RF with a user-uploaded file (only for small custom rasters).
+ * For the bundled 1.4 GB dataset use runRFPretrainedBundled() instead.
+ */
 export async function runRFPretrained(file, band = 1, valueScale = "dB") {
     const formData = new FormData();
     formData.append("file", file);
@@ -199,9 +266,7 @@ export async function runRFPretrained(file, band = 1, valueScale = "dB") {
         method: "POST",
         body: formData,
     });
-    if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        throw new Error(error.detail || "RF-pretrained flood detection failed");
-    }
-    return response.json();
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "RF-pretrained flood detection failed");
+    return data;
 }

@@ -36,3 +36,14 @@ outputs/
 
 # Temporary files
 *.tmp
+
+# Agent artifacts
+.agents/
+
+# Vite scaffold assets (unused)
+frontend/src/assets/react.svg
+frontend/src/assets/vite.svg
+
+# Large binary datasets (too big for GitHub — use Git LFS or external storage)
+datasets/sar/*.tif
+datasets/sar/*.tiff

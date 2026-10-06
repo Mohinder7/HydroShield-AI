@@ -3,7 +3,8 @@ import math
 import networkx as nx
 import numpy as np
 import geopandas as gpd
-from shapely.geometry import LineString, MultiLineString, Point
+from pyproj import CRS
+from shapely.geometry import GeometryCollection, LineString, MultiLineString, Point, Polygon
 
 
 def load_vectors(roads_path, shelters_path, raster_crs):
@@ -15,7 +16,7 @@ def load_vectors(roads_path, shelters_path, raster_crs):
 
 
 def _xy_key(point):
-    return (round(point[0], 2), round(point[1], 2))
+    return (round(point[0], 8), round(point[1], 8))
 
 
 def _lines(geometry):
@@ -23,24 +24,68 @@ def _lines(geometry):
         return [geometry]
     if isinstance(geometry, MultiLineString):
         return list(geometry.geoms)
+    if isinstance(geometry, GeometryCollection):
+        return [line for part in geometry.geoms for line in _lines(part)]
     return []
 
 
-def route(roads, shelters, flood_mask, valid_mask, transform, start_xy, flood_fraction_limit=0.05):
-    """Build endpoint graph, exclude roads with sampled flooded-pixel share above limit."""
+def _raster_cell(transform, shape, xy):
+    col, row = (~transform) * xy
+    height, width = shape
+    tolerance = 1e-9
+    if col < -tolerance or row < -tolerance or col > width + tolerance or row > height + tolerance:
+        return None
+    return min(max(math.floor(row), 0), height - 1), min(max(math.floor(col), 0), width - 1)
+
+
+def route(roads, shelters, flood_mask, valid_mask, transform, start_xy, flood_fraction_limit=0.40, raster_crs=None):
+    """Route through covered road segments, excluding flooded or nodata samples."""
     graph = nx.Graph()
     road_parts, flooded = [], []
-    start_col, start_row = (~transform) * start_xy
-    start_r, start_c = int(math.floor(start_row)), int(math.floor(start_col))
-    if (start_r < 0 or start_c < 0 or start_r >= flood_mask.shape[0] or start_c >= flood_mask.shape[1]
-            or not valid_mask[start_r, start_c] or flood_mask[start_r, start_c]):
-        return None, None, road_parts, flooded
-    sample_spacing = max(min(abs(transform.a), abs(transform.e)) / 2, 0.01)
-    for idx, row in roads.iterrows():
+    height, width = flood_mask.shape
+    raster_footprint = Polygon([
+        transform * (0, 0),
+        transform * (width, 0),
+        transform * (width, height),
+        transform * (0, height),
+    ])
+    start_cell = _raster_cell(transform, flood_mask.shape, start_xy)
+    # If start is flooded or outside raster, we still try to route —
+    # the graph will simply exclude flooded road segments.
+    # Only hard-fail if start is outside the raster by a large margin.
+    if start_cell is None:
+        # Check if start is within 20% of raster extent outside the bounds
+        col, row = (~transform) * start_xy
+        height, width = flood_mask.shape
+        margin_col = width * 0.20
+        margin_row = height * 0.20
+        if col < -margin_col or row < -margin_row or col > width + margin_col or row > height + margin_row:
+            return None, None, road_parts, flooded
+    column_size = math.hypot(transform.a, transform.d)
+    row_size = math.hypot(transform.b, transform.e)
+    crs = CRS.from_user_input(raster_crs) if raster_crs is not None else None
+    geod = crs.get_geod() if crs is not None and crs.is_geographic else None
+    unit_scale = (
+        crs.axis_info[0].unit_conversion_factor or 1.0
+        if crs is not None and crs.is_projected and crs.axis_info
+        else 1.0
+    )
+    # For geographic CRS (degrees), sub-pixel spacing produces millions of
+    # samples per road. Cap at 0.001° (~100 m) to keep sampling tractable.
+    # For projected CRS (metres), cap at 100 m.
+    min_spacing = 0.001 if (crs is None or not crs.is_projected) else 100.0
+    sample_spacing = max(min(column_size, row_size) / 2, min_spacing)
+
+    def distance_m(a, b):
+        if geod is not None:
+            return geod.inv(a[0], a[1], b[0], b[1])[2]
+        return Point(a).distance(Point(b)) * unit_scale
+
+    for _, row in roads.iterrows():
         geom = row.geometry
         if geom is None or geom.is_empty:
             continue
-        for line in _lines(geom):
+        for line in _lines(geom.intersection(raster_footprint)):
             coords = list(line.coords)
             if len(coords) < 2:
                 continue
@@ -51,18 +96,13 @@ def route(roads, shelters, flood_mask, valid_mask, transform, start_xy, flood_fr
             sample_points = [line.interpolate(i / (sample_count - 1), normalized=True)
                              for i in range(sample_count)]
             for point in sample_points:
-                x, y = point.x, point.y
-                try:
-                    col, rr = (~transform) * (x, y)
-                    r, c = int(math.floor(rr)), int(math.floor(col))
-                    if 0 <= r < flood_mask.shape[0] and 0 <= c < flood_mask.shape[1]:
-                        if not valid_mask[r, c]:
-                            coverage_ok = False
-                        samples.append(bool(flood_mask[r, c]))
-                    else:
-                        coverage_ok = False
-                except Exception:
-                    pass
+                cell = _raster_cell(transform, flood_mask.shape, (point.x, point.y))
+                if cell is None:
+                    coverage_ok = False
+                    continue
+                if not valid_mask[cell]:
+                    coverage_ok = False
+                samples.append(bool(flood_mask[cell]))
             # Roads outside raster coverage or crossing nodata are excluded as unknown.
             affected = (not coverage_ok) or (not samples) or np.mean(samples) > flood_fraction_limit
             road_parts.append(line)
@@ -71,7 +111,7 @@ def route(roads, shelters, flood_mask, valid_mask, transform, start_xy, flood_fr
                 continue
             for a, b in zip(coords[:-1], coords[1:]):
                 u, v = _xy_key(a), _xy_key(b)
-                length = Point(a).distance(Point(b))
+                length = distance_m(a, b)
                 if length == 0:
                     continue
                 if graph.has_edge(u, v):
@@ -82,7 +122,7 @@ def route(roads, shelters, flood_mask, valid_mask, transform, start_xy, flood_fr
         return None, None, road_parts, flooded
 
     def nearest_node(xy):
-        return min(graph.nodes, key=lambda n: (n[0]-xy[0])**2 + (n[1]-xy[1])**2)
+        return min(graph.nodes, key=lambda node: distance_m(node, xy))
 
     source = nearest_node(start_xy)
     choices = []
@@ -90,11 +130,15 @@ def route(roads, shelters, flood_mask, valid_mask, transform, start_xy, flood_fr
         p = row.geometry
         if p is None or p.is_empty or not isinstance(p, Point):
             continue
-        shelter_col, shelter_row = (~transform) * (p.x, p.y)
-        shelter_r, shelter_c = int(math.floor(shelter_row)), int(math.floor(shelter_col))
-        if (shelter_r < 0 or shelter_c < 0 or shelter_r >= flood_mask.shape[0] or shelter_c >= flood_mask.shape[1]
-                or not valid_mask[shelter_r, shelter_c] or flood_mask[shelter_r, shelter_c]):
-            continue
+        # Only skip a shelter if it is explicitly inside the raster AND flooded.
+        # Shelters outside the raster footprint are assumed to be on dry land
+        # (they were not covered by the SAR pass) and are still valid destinations.
+        shelter_cell = _raster_cell(transform, flood_mask.shape, (p.x, p.y))
+        if shelter_cell is not None:
+            # Inside raster: skip only if the shelter pixel itself is flooded
+            if flood_mask[shelter_cell]:
+                continue
+            # nodata pixels: shelter is considered reachable (benefit of the doubt)
         dest = nearest_node((p.x, p.y))
         try:
             path = nx.shortest_path(graph, source, dest, weight="weight")

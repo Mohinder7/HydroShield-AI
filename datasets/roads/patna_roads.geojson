@@ -1,0 +1,584 @@
+{
+  "type": "FeatureCollection",
+  "name": "Bihar Road Network (connected)",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:OGC:1.3:CRS84"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "NH-2 Grand Trunk Road East-West",
+        "highway": "primary"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            83.4,
+            24.65
+          ],
+          [
+            83.7,
+            24.65
+          ],
+          [
+            84.0,
+            24.65
+          ],
+          [
+            84.25,
+            24.7
+          ],
+          [
+            84.5,
+            24.75
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "NH-83 North Spine",
+        "highway": "primary"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            83.4,
+            24.9
+          ],
+          [
+            83.7,
+            24.9
+          ],
+          [
+            84.0,
+            24.9
+          ],
+          [
+            84.25,
+            24.95
+          ],
+          [
+            84.5,
+            25.0
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Bihar South Highway",
+        "highway": "primary"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            83.4,
+            24.4
+          ],
+          [
+            83.7,
+            24.35
+          ],
+          [
+            84.0,
+            24.4
+          ],
+          [
+            84.25,
+            24.45
+          ],
+          [
+            84.5,
+            24.5
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Bihar North Road",
+        "highway": "secondary"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            83.4,
+            25.05
+          ],
+          [
+            83.7,
+            25.1
+          ],
+          [
+            84.0,
+            25.1
+          ],
+          [
+            84.25,
+            25.1
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "West Bihar NS Road",
+        "highway": "secondary"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            83.4,
+            24.4
+          ],
+          [
+            83.4,
+            24.65
+          ],
+          [
+            83.4,
+            24.9
+          ],
+          [
+            83.4,
+            25.05
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Central-West Bihar NS",
+        "highway": "secondary"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            83.7,
+            24.35
+          ],
+          [
+            83.7,
+            24.65
+          ],
+          [
+            83.7,
+            24.9
+          ],
+          [
+            83.7,
+            25.1
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Bihar Central Highway NS",
+        "highway": "secondary"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            84.0,
+            24.4
+          ],
+          [
+            84.0,
+            24.65
+          ],
+          [
+            84.0,
+            24.9
+          ],
+          [
+            84.0,
+            25.1
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "East-Central Bihar NS",
+        "highway": "secondary"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            84.25,
+            24.45
+          ],
+          [
+            84.25,
+            24.7
+          ],
+          [
+            84.25,
+            24.95
+          ],
+          [
+            84.25,
+            25.1
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "East Bihar NS Road",
+        "highway": "secondary"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            84.5,
+            24.5
+          ],
+          [
+            84.5,
+            24.75
+          ],
+          [
+            84.5,
+            25.0
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Aurangabad-Gaya Road",
+        "highway": "tertiary"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            84.37,
+            24.75
+          ],
+          [
+            84.0,
+            24.4
+          ],
+          [
+            83.7,
+            24.65
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Aurangabad-Bodh Gaya Road",
+        "highway": "tertiary"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            84.37,
+            24.75
+          ],
+          [
+            84.25,
+            24.45
+          ],
+          [
+            84.5,
+            24.5
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Rafiganj-Gaya Road",
+        "highway": "tertiary"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            84.65,
+            24.82
+          ],
+          [
+            84.25,
+            24.7
+          ],
+          [
+            84.0,
+            24.65
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Rafiganj-Bodh Gaya Road",
+        "highway": "tertiary"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            84.65,
+            24.82
+          ],
+          [
+            84.5,
+            24.75
+          ],
+          [
+            84.5,
+            24.7
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Sherghati-Bodh Gaya Road",
+        "highway": "tertiary"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            84.81,
+            24.56
+          ],
+          [
+            84.25,
+            24.45
+          ],
+          [
+            84.5,
+            24.5
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Sherghati District Road",
+        "highway": "tertiary"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            84.81,
+            24.56
+          ],
+          [
+            84.5,
+            24.7
+          ],
+          [
+            84.5,
+            24.75
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Bodh Gaya-Jehanabad Road",
+        "highway": "tertiary"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            84.5,
+            24.7
+          ],
+          [
+            84.5,
+            24.75
+          ],
+          [
+            84.5,
+            25.0
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Arwal-Jehanabad Link",
+        "highway": "tertiary"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            84.68,
+            25.24
+          ],
+          [
+            84.25,
+            25.1
+          ],
+          [
+            84.0,
+            25.1
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Jehanabad District Road",
+        "highway": "tertiary"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            84.5,
+            25.0
+          ],
+          [
+            84.5,
+            25.0
+          ],
+          [
+            84.25,
+            24.95
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Bihar Diagonal Road 1",
+        "highway": "unclassified"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            83.7,
+            24.35
+          ],
+          [
+            84.0,
+            24.65
+          ],
+          [
+            84.25,
+            24.95
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Bihar Diagonal Road 2",
+        "highway": "unclassified"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            83.4,
+            24.9
+          ],
+          [
+            83.7,
+            24.65
+          ],
+          [
+            84.0,
+            24.4
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Bihar Diagonal Road 3",
+        "highway": "unclassified"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            84.0,
+            24.9
+          ],
+          [
+            84.25,
+            24.7
+          ],
+          [
+            84.5,
+            24.5
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "West Connector Road",
+        "highway": "unclassified"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            84.37,
+            24.75
+          ],
+          [
+            83.7,
+            24.65
+          ],
+          [
+            83.4,
+            24.9
+          ]
+        ]
+      }
+    }
+  ]
+}

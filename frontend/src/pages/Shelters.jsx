@@ -14,31 +14,115 @@ import "leaflet/dist/leaflet.css";
 const FALLBACK_SHELTERS = [
     {
         id: 1,
-        name: "Patna Junction Relief Center",
-        shortName: "Patna Junction Relief Center",
-        location: "Patna Junction, Patna, Bihar",
-        type: "Flood Relief Centre",
+        name: "Gaya District Collectorate Relief Camp",
+        shortName: "Gaya DC Relief Camp",
+        location: "Gaya, Bihar",
+        type: "Government Relief Centre",
         status: "ACTIVE",
-        latitude: 25.6022,
-        longitude: 85.1376,
-        capacity: null,
+        latitude: 24.7955,
+        longitude: 84.9994,
+        capacity: 500,
         occupied: null,
         facilities: ["Food", "Drinking Water", "Medical Aid"],
-        sourceDate: "Patna SAR dataset — bundled shelter",
+        sourceDate: "Bihar SAR dataset — bundled shelter",
     },
     {
         id: 2,
-        name: "AIIMS Patna Shelter",
-        shortName: "AIIMS Patna Shelter",
-        location: "AIIMS Campus, Phulwari Sharif, Patna",
-        type: "Medical Flood Relief Centre",
+        name: "Bodh Gaya Emergency Shelter",
+        shortName: "Bodh Gaya Shelter",
+        location: "Bodh Gaya, Gaya District, Bihar",
+        type: "Flood Relief Camp",
         status: "ACTIVE",
-        latitude: 25.5605,
-        longitude: 85.0410,
-        capacity: null,
+        latitude: 24.6936,
+        longitude: 84.9877,
+        capacity: 300,
         occupied: null,
-        facilities: ["Food", "Drinking Water", "Medical Aid", "Hospital"],
-        sourceDate: "Patna SAR dataset — bundled shelter",
+        facilities: ["Food", "Drinking Water", "Medical Aid"],
+        sourceDate: "Bihar SAR dataset — bundled shelter",
+    },
+    {
+        id: 3,
+        name: "Aurangabad Flood Relief Camp",
+        shortName: "Aurangabad Relief Camp",
+        location: "Aurangabad, Bihar",
+        type: "Government Camp",
+        status: "ACTIVE",
+        latitude: 24.7521,
+        longitude: 84.3742,
+        capacity: 350,
+        occupied: null,
+        facilities: ["Food", "Drinking Water", "Medical Aid"],
+        sourceDate: "Bihar SAR dataset — bundled shelter",
+    },
+    {
+        id: 4,
+        name: "Rafiganj Shelter",
+        shortName: "Rafiganj Shelter",
+        location: "Rafiganj, Aurangabad District, Bihar",
+        type: "Community Shelter",
+        status: "ACTIVE",
+        latitude: 24.8220,
+        longitude: 84.6453,
+        capacity: 250,
+        occupied: null,
+        facilities: ["Food", "Drinking Water", "Medical Aid"],
+        sourceDate: "Bihar SAR dataset — bundled shelter",
+    },
+    {
+        id: 5,
+        name: "Sherghati Relief Point",
+        shortName: "Sherghati Relief",
+        location: "Sherghati, Gaya District, Bihar",
+        type: "Relief Point",
+        status: "ACTIVE",
+        latitude: 24.5605,
+        longitude: 84.8116,
+        capacity: 180,
+        occupied: null,
+        facilities: ["Food", "Drinking Water", "Medical Aid"],
+        sourceDate: "Bihar SAR dataset — bundled shelter",
+    },
+    {
+        id: 6,
+        name: "Arwal Relief Camp",
+        shortName: "Arwal Relief Camp",
+        location: "Arwal, Bihar",
+        type: "Flood Relief Centre",
+        status: "ACTIVE",
+        latitude: 25.2437,
+        longitude: 84.6802,
+        capacity: 200,
+        occupied: null,
+        facilities: ["Food", "Drinking Water", "Medical Aid"],
+        sourceDate: "Bihar SAR dataset — bundled shelter",
+    },
+    {
+        id: 7,
+        name: "Jehanabad Emergency Centre",
+        shortName: "Jehanabad Centre",
+        location: "Jehanabad, Bihar",
+        type: "District Shelter",
+        status: "ACTIVE",
+        latitude: 25.2128,
+        longitude: 84.9941,
+        capacity: 450,
+        occupied: null,
+        facilities: ["Food", "Drinking Water", "Medical Aid"],
+        sourceDate: "Bihar SAR dataset — bundled shelter",
+    },
+    {
+        id: 8,
+        name: "Nawada District School Relief Centre",
+        shortName: "Nawada School Shelter",
+        location: "Nawada, Bihar",
+        type: "School Shelter",
+        status: "VERIFY",
+        latitude: 24.8879,
+        longitude: 85.5396,
+        capacity: 400,
+        occupied: null,
+        facilities: ["Food", "Drinking Water", "Medical Aid"],
+        sourceDate: "Bihar SAR dataset — bundled shelter",
     },
 ];
 
@@ -47,7 +131,7 @@ function geoJsonToShelters(geojson) {
         id: idx + 1,
         name: f.properties?.name || `Shelter ${idx + 1}`,
         shortName: f.properties?.name || `Shelter ${idx + 1}`,
-        location: f.properties?.location || "Patna, Bihar",
+        location: f.properties?.location || "Bihar, India",
         type: f.properties?.type || "Flood Relief Centre",
         status: f.properties?.status || "ACTIVE",
         latitude: f.geometry.coordinates[1],
@@ -243,7 +327,7 @@ function Shelters() {
                     <p>
                         Find rehabilitation and emergency
                         shelter locations for flood-affected
-                        residents in Patna.
+                        residents in the Bihar SAR coverage area (Gaya, Aurangabad, Arwal districts).
                     </p>
                 </div>
 
@@ -369,7 +453,7 @@ function Shelters() {
                         <span>City</span>
 
                         <strong>
-                            Patna
+                            Bihar SAR Region
                         </strong>
                     </div>
 
@@ -387,7 +471,7 @@ function Shelters() {
 
                     <div>
                         <h3>
-                            Patna Flood Relief Map
+                            Bihar Flood Relief Map
                         </h3>
 
                         <p>
@@ -412,10 +496,10 @@ function Shelters() {
 
                     <MapContainer
                         center={[
-                            25.59,
-                            85.09,
+                            24.647,
+                            83.903,
                         ]}
-                        zoom={13}
+                        zoom={9}
                         scrollWheelZoom={true}
                         className="leaflet-map"
                     >

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import Icon from "../components/Icon";
-import { detectFlood, getBundledRaster, getBundledShelters } from "../api";
+import { detectFloodBundled, getBundledShelters } from "../api";
 import {
     MapContainer,
     TileLayer,
@@ -9,7 +9,8 @@ import {
 } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 
-const PATNA_CENTER = [25.59, 85.09];
+// Raster coverage centre: Bihar/Gaya region (lon 83.27–84.53, lat 24.15–25.14)
+const PATNA_CENTER = [24.647, 83.903];
 
 function riskColor(level) {
     if (!level) return "#64748b";
@@ -111,8 +112,7 @@ function Dashboard({ onNavigate }) {
 
             // Load flood data
             try {
-                const rasterFile = await getBundledRaster();
-                const data = await detectFlood(rasterFile, 1, -17, "dB");
+                const data = await detectFloodBundled(1, -17, "dB");
                 if (!cancelled) {
                     setFloodData(data);
                     setAlerts(
@@ -197,8 +197,8 @@ function Dashboard({ onNavigate }) {
 
     // Approximate Patna SAR dataset bounding box
     const floodBounds = [
-        [25.49, 84.95],
-        [25.72, 85.28],
+        [24.15, 83.27],  // SW corner of SAR raster
+        [25.14, 84.53],  // NE corner of SAR raster
     ];
 
     return (

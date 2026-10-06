@@ -17,10 +17,14 @@ from fastapi.responses import FileResponse
 
 from src.pipeline import (
     calculate_area,
+    db_features,
+    extract_sar_features,
+    FEATURE_NAMES,
     otsu_threshold,
     predict,
     raster_info,
     read_features,
+    read_features_tiled,
     risk_summary,
     threshold_mask,
     train_random_forest,
@@ -754,29 +758,347 @@ async def find_safe_route(
 
 DATASETS_DIR = Path(r"d:/HydroShield-AI/datasets")
 
+# Real filename on disk
+_RASTER_FILENAME  = "subset_0_of_S1A_IW_GRDH_1SDV_20191005T002026_Cal_TF_NR_TC_2.tif"
+_ROADS_FILENAME   = "patna_roads.geojson"
+_SHELTERS_FILENAME = "patna_shelters.geojson"
+
+BUNDLED_RASTER_PATH   = DATASETS_DIR / "sar"      / _RASTER_FILENAME
+BUNDLED_ROADS_PATH    = DATASETS_DIR / "roads"    / _ROADS_FILENAME
+BUNDLED_SHELTERS_PATH = DATASETS_DIR / "shelters" / _SHELTERS_FILENAME
+
+
 @app.get("/api/datasets/raster")
 def serve_bundled_raster():
-    """Serve the bundled peak_flood_subset SAR raster."""
-    path = DATASETS_DIR / "sar" / "peak_flood_subset.tif"
-    if not path.exists():
+    """Serve the bundled Sentinel-1 SAR raster directly from disk."""
+    if not BUNDLED_RASTER_PATH.exists():
         raise HTTPException(status_code=404, detail="Bundled raster not found.")
-    return FileResponse(str(path), media_type="image/tiff", filename="peak_flood_subset.tif")
+    return FileResponse(
+        str(BUNDLED_RASTER_PATH),
+        media_type="image/tiff",
+        filename="patna_sar_flood.tif",
+    )
 
 @app.get("/api/datasets/roads")
 def serve_bundled_roads():
     """Serve the bundled Patna roads GeoJSON."""
-    path = DATASETS_DIR / "roads" / "patna_roads.geojson"
-    if not path.exists():
+    if not BUNDLED_ROADS_PATH.exists():
         raise HTTPException(status_code=404, detail="Bundled roads not found.")
-    return FileResponse(str(path), media_type="application/json", filename="patna_roads.geojson")
+    return FileResponse(str(BUNDLED_ROADS_PATH), media_type="application/json", filename="patna_roads.geojson")
 
 @app.get("/api/datasets/shelters")
 def serve_bundled_shelters():
     """Serve the bundled Patna shelters GeoJSON."""
-    path = DATASETS_DIR / "shelters" / "patna_shelters.geojson"
-    if not path.exists():
+    if not BUNDLED_SHELTERS_PATH.exists():
         raise HTTPException(status_code=404, detail="Bundled shelters not found.")
-    return FileResponse(str(path), media_type="application/json", filename="patna_shelters.geojson")
+    return FileResponse(str(BUNDLED_SHELTERS_PATH), media_type="application/json", filename="patna_shelters.geojson")
+
+
+# ============================================================
+# BUNDLED ANALYSIS ENDPOINTS
+# These run analysis directly from files on disk — no upload needed.
+# This is the correct approach for the 1.4 GB SAR raster.
+# ============================================================
+
+# Sentinel value: when the client sends exactly this threshold the backend
+# auto-computes the optimal value using Otsu thresholding on the raster.
+_AUTO_THRESHOLD_SENTINEL = -17.0
+
+
+def _auto_detect_scale(flat_raw: np.ndarray) -> str:
+    """
+    Detect whether pixel values are already in dB or still in linear power.
+
+    Sentinel-1 GRD products processed with SNAP output dB values typically
+    in the range -30..0.  Linear power (sigma0) values are typically 0..1.
+    If the max value is < 10 we assume linear power and return 'Linear power';
+    otherwise we assume the values are already in dB.
+    """
+    max_val = float(np.nanmax(flat_raw))
+    if max_val < 10.0:
+        return "Linear power"
+    return "dB"
+
+
+def _resolve_threshold(flat_valid_db: np.ndarray, requested: float) -> tuple[float, bool]:
+    """
+    Return (effective_threshold_db, was_auto_detected).
+
+    If `requested` equals the sentinel value (-17.0) AND the raster has
+    0% flooded pixels with that threshold, fall back to Otsu auto-detection.
+    Uses the lower 30th-percentile value as a conservative water threshold
+    when Otsu selects a value that would mark too many pixels as flooded (>60%).
+    """
+    # Quick test: how many pixels would be flooded with the requested threshold?
+    n_flooded = int((flat_valid_db <= requested).sum())
+    if n_flooded > 0:
+        return requested, False  # requested threshold already works fine
+
+    # 0% flood — switch to Otsu auto-detection
+    auto_t = otsu_threshold(flat_valid_db)
+
+    # Sanity check: if Otsu marks >60% as flooded the scene is likely
+    # near-uniform and the threshold is not meaningful — use p20 instead
+    pct_flooded = 100.0 * (flat_valid_db <= auto_t).sum() / max(len(flat_valid_db), 1)
+    if pct_flooded > 60.0:
+        auto_t = float(np.percentile(flat_valid_db, 20))
+
+    return auto_t, True
+
+
+@app.post("/api/flood/detect-bundled")
+def detect_flood_bundled(
+    band: int = Form(1),
+    threshold: float = Form(-17.0),
+    value_scale: str = Form("dB"),
+):
+    """
+    Run threshold flood detection on the bundled SAR raster (no upload).
+    Reads directly from disk — handles any file size.
+    Auto-tunes the threshold with Otsu when the default -17 dB yields 0% flood.
+    """
+    if not BUNDLED_RASTER_PATH.exists():
+        raise HTTPException(status_code=404, detail="Bundled SAR raster not found on server.")
+    try:
+        info = raster_info(BUNDLED_RASTER_PATH)
+        if band < 1 or band > info["bands"]:
+            raise HTTPException(status_code=400, detail=f"Band must be between 1 and {info['bands']}.")
+
+        features, valid, profile = read_features_tiled(BUNDLED_RASTER_PATH, [band])
+        if not valid.any():
+            raise HTTPException(status_code=400, detail="No valid pixels in raster band.")
+
+        # Auto-detect scale (linear vs dB) then auto-tune threshold
+        raw_flat      = features[valid, 0]
+        detected_scale = _auto_detect_scale(raw_flat)
+        eff_scale     = detected_scale if value_scale == "dB" else value_scale
+        db_vals       = db_features(features, eff_scale)
+        flat_vals     = db_vals[valid, 0]
+        eff_threshold, auto_detected = _resolve_threshold(flat_vals, threshold)
+
+        mask, _ = threshold_mask(features, valid, eff_threshold, eff_scale)
+        flooded_pixels = int(mask.sum())
+        valid_pixels   = int(valid.sum())
+        percentage     = 100.0 * flooded_pixels / max(valid_pixels, 1)
+
+        result = {
+            "success": True,
+            "method": "Exploratory SAR threshold",
+            "threshold_db": round(eff_threshold, 4),
+            "threshold_auto": auto_detected,
+            "value_scale": eff_scale,
+            "detected_scale": detected_scale,
+            "total_pixels": info["width"] * info["height"],
+            "flooded_pixels": flooded_pixels,
+            "valid_pixels": valid_pixels,
+            "flooded_percentage": round(percentage, 4),
+            "source": "bundled",
+            "filename": _RASTER_FILENAME,
+        }
+        try:
+            flooded_area = calculate_area(mask & valid, profile)
+            total_area   = calculate_area(valid, profile)
+            risk         = risk_summary(flooded_area, total_area, percentage)
+            result["flooded_area_km2"] = round(flooded_area, 4)
+            result["total_area_km2"]   = round(total_area,   4)
+            result["risk"]             = risk
+        except ValueError as exc:
+            result["area_error"] = str(exc)
+            result["risk"]       = None
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Bundled flood detection failed: {exc}")
+
+
+@app.post("/api/flood/rf-pretrained-bundled")
+def rf_pretrained_bundled(
+    band: int = Form(1),
+    value_scale: str = Form("dB"),
+):
+    """
+    Run multi-feature Random Forest on the bundled SAR raster (no upload).
+    Reads directly from disk — handles any file size.
+    Uses tiled reading + 6-feature extraction + stratified sub-sampling.
+    """
+    if not BUNDLED_RASTER_PATH.exists():
+        raise HTTPException(status_code=404, detail="Bundled SAR raster not found on server.")
+    try:
+        info = raster_info(BUNDLED_RASTER_PATH)
+        if band < 1 or band > info["bands"]:
+            raise HTTPException(status_code=400, detail=f"Band must be between 1 and {info['bands']}.")
+
+        features, valid, profile = read_features_tiled(BUNDLED_RASTER_PATH, [band])
+        if not valid.any():
+            raise HTTPException(status_code=400, detail="No valid pixels in raster band.")
+
+        # Auto-detect scale then convert to dB for thresholding and training
+        raw_flat       = features[valid, 0]
+        detected_scale = _auto_detect_scale(raw_flat)
+        eff_scale      = detected_scale if value_scale == "dB" else value_scale
+        db_vals   = db_features(features, eff_scale)
+        flat_vals = db_vals[valid, 0]
+
+        otsu_t        = otsu_threshold(flat_vals)
+        pseudo_labels = np.zeros(valid.shape, dtype="uint8")
+        pseudo_labels[valid] = (flat_vals <= otsu_t).astype("uint8")
+
+        # Sanity: if Otsu marks >60% flooded use p20 instead
+        if pseudo_labels[valid].mean() > 0.60:
+            otsu_t = float(np.percentile(flat_vals, 20))
+            pseudo_labels[valid] = (flat_vals <= otsu_t).astype("uint8")
+
+        if len(np.unique(pseudo_labels[valid])) < 2:
+            # Fallback: label bottom 30% of values as flooded
+            fallback_t = float(np.percentile(flat_vals, 30))
+            mask_fb, _ = threshold_mask(features, valid, fallback_t, eff_scale)
+            pseudo_labels = mask_fb.astype("uint8")
+
+        if len(np.unique(pseudo_labels[valid])) < 2:
+            raise HTTPException(status_code=400, detail="Could not generate two-class pseudo-labels.")
+
+        model, _, metrics = train_random_forest(
+            features, valid, pseudo_labels, value_scale=eff_scale, use_texture=True
+        )
+        mask = predict(model, features, valid, eff_scale, use_texture=True)
+
+        flooded_pixels = int(mask.sum())
+        valid_pixels   = int(valid.sum())
+        percentage     = 100.0 * flooded_pixels / max(valid_pixels, 1)
+
+        importances = {
+            name: round(float(imp), 6)
+            for name, imp in zip(
+                metrics.get("features_used", FEATURE_NAMES),
+                model.feature_importances_,
+            )
+        }
+
+        result = {
+            "success": True,
+            "method": "Random Forest · 6-feature multi-texture",
+            "otsu_threshold_db": round(float(otsu_t), 4),
+            "flooded_pixels": flooded_pixels,
+            "valid_pixels": valid_pixels,
+            "flooded_percentage": round(percentage, 4),
+            "feature_importances": importances,
+            "source": "bundled",
+            "metrics": {
+                "accuracy":     round(metrics["accuracy"],  4),
+                "precision":    round(metrics["precision"], 4),
+                "recall":       round(metrics["recall"],    4),
+                "f1":           round(metrics["f1"],        4),
+                "iou":          round(metrics["iou"],       4),
+                "train_pixels": metrics["train_pixels"],
+                "test_pixels":  metrics["test_pixels"],
+                "n_estimators": metrics.get("n_estimators", 200),
+                "features":     metrics.get("features_used", FEATURE_NAMES),
+            },
+        }
+        try:
+            flooded_area = calculate_area(mask & valid, profile)
+            total_area   = calculate_area(valid, profile)
+            risk         = risk_summary(flooded_area, total_area, percentage)
+            result["flooded_area_km2"] = round(flooded_area, 4)
+            result["total_area_km2"]   = round(total_area,   4)
+            result["risk"]             = risk
+        except ValueError as exc:
+            result["area_error"] = str(exc)
+            result["risk"]       = None
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Bundled RF detection failed: {exc}")
+
+
+@app.post("/api/routing/find-bundled")
+async def find_safe_route_bundled(
+    latitude: float = Form(...),
+    longitude: float = Form(...),
+    band: int = Form(1),
+    threshold: float = Form(-17.0),
+    value_scale: str = Form("dB"),
+):
+    """
+    Flood-aware routing using bundled datasets (no file upload).
+    Only needs the user's latitude and longitude.
+    """
+    for label, path in [
+        ("raster", BUNDLED_RASTER_PATH),
+        ("roads",  BUNDLED_ROADS_PATH),
+        ("shelters", BUNDLED_SHELTERS_PATH),
+    ]:
+        if not path.exists():
+            raise HTTPException(status_code=404, detail=f"Bundled {label} not found on server.")
+    try:
+        features, valid, profile = read_features_tiled(BUNDLED_RASTER_PATH, [band])
+        if not valid.any():
+            raise ValueError("The raster contains no valid pixels.")
+
+        # Auto-tune threshold when default -17 dB produces 0% flood
+        db_vals_r      = db_features(features, value_scale)
+        flat_vals_r    = db_vals_r[valid, 0]
+        # Auto-detect linear vs dB scale
+        detected_scale_r = _auto_detect_scale(features[valid, 0])
+        eff_scale_r      = detected_scale_r if value_scale == "dB" else value_scale
+        if eff_scale_r != value_scale:
+            db_vals_r   = db_features(features, eff_scale_r)
+            flat_vals_r = db_vals_r[valid, 0]
+        eff_threshold_r, _ = _resolve_threshold(flat_vals_r, threshold)
+
+        mask, _ = threshold_mask(features, valid, threshold_db=eff_threshold_r, value_scale=eff_scale_r)
+
+        roads_gdf, shelters_gdf = load_vectors(
+            BUNDLED_ROADS_PATH, BUNDLED_SHELTERS_PATH, profile["crs"]
+        )
+
+        x, y = reproject_coords("EPSG:4326", profile["crs"], [longitude], [latitude])
+        start_xy = (x[0], y[0])
+
+        result, _, _, flooded_roads = route(
+            roads_gdf, shelters_gdf, mask, valid, profile["transform"],
+            start_xy, raster_crs=profile["crs"],
+        )
+
+        if result is None:
+            return {
+                "success": False,
+                "message": "No safe reachable shelter found from this location.",
+                "affected_roads": int(sum(flooded_roads)),
+            }
+
+        route_x = [p[0] for p in result["coordinates"]]
+        route_y = [p[1] for p in result["coordinates"]]
+        route_lon, route_lat = reproject_coords(profile["crs"], "EPSG:4326", route_x, route_y)
+        route_coordinates = [[lat, lon] for lat, lon in zip(route_lat, route_lon)]
+
+        shelter_row  = shelters_gdf.loc[result["shelter_index"]]
+        shelter_name = shelter_row.get("name") if "name" in shelter_row.index else "Safe Shelter"
+        if shelter_name is None:
+            shelter_name = "Safe Shelter"
+
+        shelter_point = result["shelter"]
+        s_lon, s_lat  = reproject_coords(profile["crs"], "EPSG:4326", [shelter_point.x], [shelter_point.y])
+
+        return {
+            "success": True,
+            "message": "Safe route calculated successfully.",
+            "route": route_coordinates,
+            "distance_m": round(float(result["length_m"]), 2),
+            "affected_roads": int(sum(flooded_roads)),
+            "shelter": {
+                "name": str(shelter_name),
+                "latitude":  float(s_lat[0]),
+                "longitude": float(s_lon[0]),
+            },
+            "start": {"latitude": latitude, "longitude": longitude},
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Bundled routing failed: {exc}")
 
 
 @app.post("/api/flood/rf-pretrained")
@@ -786,83 +1108,131 @@ def rf_pretrained_detection(
     value_scale: str = Form("dB"),
 ):
     """
-    Pretrained Random Forest using Otsu-generated pseudo-labels.
-    No labelled data required.
+    Multi-feature Random Forest flood classifier — no labelled data required.
+
+    Pipeline:
+      1. Read SAR raster via memory-efficient tiled loader.
+      2. Convert to dB (if needed).
+      3. Auto-generate pseudo-labels with vectorised Otsu thresholding.
+      4. Extract 6 texture/spatial features per valid pixel:
+            raw_db · local_mean · local_std ·
+            gradient_magnitude · local_contrast · homogeneity
+      5. Stratified sub-sample (≤200 k pixels) for fast training.
+      6. Train Random Forest (200 trees, all CPU cores, balanced weights).
+      7. Predict flood mask in PREDICT_CHUNK-sized batches.
+      8. Return flood stats + model metrics + feature importances.
     """
     raster_path = save_uploaded_file(file, "rf_pretrained")
     try:
+        # ── 1. Validate band ──────────────────────────────────────────────
         info = raster_info(raster_path)
         if band < 1 or band > info["bands"]:
-            raise HTTPException(status_code=400, detail=f"Band must be between 1 and {info['bands']}.")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Band must be between 1 and {info['bands']}.",
+            )
 
-        features, valid, profile = read_features(raster_path, [band])
+        # ── 2. Tiled read — memory-efficient for large GeoTIFFs ───────────
+        features, valid, profile = read_features_tiled(raster_path, [band])
 
         if not valid.any():
-            raise HTTPException(status_code=400, detail="The raster band contains no valid pixels.")
+            raise HTTPException(
+                status_code=400,
+                detail="The raster band contains no valid pixels.",
+            )
 
-        # Use db features for thresholding and training
-        from src.pipeline import db_features as _db_features
-        db_vals = _db_features(features, value_scale)
-        flat_vals = db_vals[valid, 0]
+        # ── 3. Convert to dB & generate pseudo-labels via Otsu ───────────
+        db_vals   = db_features(features, value_scale)   # H×W×1
+        flat_vals = db_vals[valid, 0]                    # 1-D array
 
-        # Auto-generate pseudo-labels using Otsu thresholding
-        otsu_t = otsu_threshold(flat_vals)
+        otsu_t        = otsu_threshold(flat_vals)
         pseudo_labels = np.zeros(valid.shape, dtype="uint8")
-        pseudo_labels[valid] = (db_vals[..., 0][valid] <= otsu_t).astype("uint8")
+        pseudo_labels[valid] = (flat_vals <= otsu_t).astype("uint8")
 
-        # Need at least 2 classes for RF training
-        ys = pseudo_labels[valid]
-        if len(np.unique(ys)) < 2:
-            # fallback: use threshold_mask result
-            mask_fb, _ = threshold_mask(features, valid, -17.0, value_scale)
+        # Fallback if Otsu produces only one class (very homogeneous scene)
+        if len(np.unique(pseudo_labels[valid])) < 2:
+            # Label bottom 30% of backscatter values as flooded
+            fallback_t = float(np.percentile(flat_vals, 30))
+            mask_fb, _ = threshold_mask(features, valid, fallback_t, value_scale)
             pseudo_labels = mask_fb.astype("uint8")
-            ys = pseudo_labels[valid]
 
-        if len(np.unique(ys)) < 2:
-            raise HTTPException(status_code=400, detail="Could not generate two-class pseudo-labels for this raster.")
+        if len(np.unique(pseudo_labels[valid])) < 2:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Could not generate two-class pseudo-labels for this raster. "
+                    "The scene may be entirely flooded or entirely dry."
+                ),
+            )
 
-        model, _, metrics = train_random_forest(features, valid, pseudo_labels, value_scale)
-        mask = predict(model, features, valid, value_scale)
+        # ── 4–6. Extract 6 texture features + train RF ────────────────────
+        model, _, metrics = train_random_forest(
+            features,
+            valid,
+            pseudo_labels,
+            value_scale=value_scale,
+            use_texture=True,   # ← enables 6-feature extraction
+        )
 
+        # ── 7. Chunked prediction ─────────────────────────────────────────
+        mask = predict(model, features, valid, value_scale, use_texture=True)
+
+        # ── 8. Compute stats ──────────────────────────────────────────────
         flooded_pixels = int(mask.sum())
-        valid_pixels = int(valid.sum())
-        percentage = 100.0 * flooded_pixels / max(valid_pixels, 1)
+        valid_pixels   = int(valid.sum())
+        percentage     = 100.0 * flooded_pixels / max(valid_pixels, 1)
+
+        # Feature importances (available after training)
+        importances = {
+            name: round(float(imp), 6)
+            for name, imp in zip(
+                metrics.get("features_used", FEATURE_NAMES),
+                model.feature_importances_,
+            )
+        }
 
         result = {
-            "success": True,
-            "method": "Random Forest (Otsu pseudo-labels)",
-            "otsu_threshold_db": round(float(otsu_t), 4),
-            "flooded_pixels": flooded_pixels,
-            "valid_pixels": valid_pixels,
-            "flooded_percentage": round(percentage, 4),
+            "success":              True,
+            "method":               "Random Forest · 6-feature multi-texture",
+            "otsu_threshold_db":    round(float(otsu_t), 4),
+            "flooded_pixels":       flooded_pixels,
+            "valid_pixels":         valid_pixels,
+            "flooded_percentage":   round(percentage, 4),
+            "feature_importances":  importances,
             "metrics": {
-                "accuracy": metrics["accuracy"],
-                "precision": metrics["precision"],
-                "recall": metrics["recall"],
-                "f1": metrics["f1"],
-                "iou": metrics["iou"],
+                "accuracy":     round(metrics["accuracy"],  4),
+                "precision":    round(metrics["precision"], 4),
+                "recall":       round(metrics["recall"],    4),
+                "f1":           round(metrics["f1"],        4),
+                "iou":          round(metrics["iou"],       4),
                 "train_pixels": metrics["train_pixels"],
-                "test_pixels": metrics["test_pixels"],
+                "test_pixels":  metrics["test_pixels"],
+                "n_estimators": metrics.get("n_estimators", 200),
+                "features":     metrics.get("features_used", FEATURE_NAMES),
             },
         }
 
+        # Area + risk (only possible with a projected CRS)
         try:
             flooded_area = calculate_area(mask & valid, profile)
-            total_area = calculate_area(valid, profile)
-            risk = risk_summary(flooded_area, total_area, percentage)
+            total_area   = calculate_area(valid, profile)
+            risk         = risk_summary(flooded_area, total_area, percentage)
             result["flooded_area_km2"] = round(flooded_area, 4)
-            result["total_area_km2"] = round(total_area, 4)
-            result["risk"] = risk
+            result["total_area_km2"]   = round(total_area,   4)
+            result["risk"]             = risk
         except ValueError as exc:
             result["area_error"] = str(exc)
-            result["risk"] = None
+            result["risk"]       = None
 
         return result
 
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"RF-pretrained detection failed: {exc}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"RF-pretrained detection failed: {exc}",
+        )
     finally:
         raster_path.unlink(missing_ok=True)
 

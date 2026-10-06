@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 import tempfile
 
 import folium
@@ -12,6 +13,7 @@ from streamlit_folium import st_folium
 
 from src.pipeline import (calculate_area, predict, raster_info, read_features, risk_summary,
                           save_mask, threshold_mask, train_random_forest)
+from src.preprocessing import preprocess_sentinel1
 from src.routing import load_vectors, route
 
 
@@ -32,20 +34,48 @@ def flood_webmap(mask, valid, profile, info):
     return webmap
 
 
-st.set_page_config(page_title="HydroShield AI", page_icon="🌊", layout="wide")
-st.title("🌊 HydroShield AI")
+st.set_page_config(page_title="HydroShield AI", layout="wide")
+st.title("HydroShield AI")
 st.caption("Sentinel-1 flood mapping and flood-aware community decision support · prototype")
 st.info("This prototype processes historical or user-provided Sentinel-1-derived rasters. It does not provide live satellite ingestion or operational emergency services.")
 
 with st.sidebar:
     st.header("1 · Select Sentinel-1 scene")
-    raster_file = st.file_uploader("GeoTIFF / Cloud Optimized GeoTIFF", type=["tif", "tiff"])
+    raster_file = st.file_uploader(
+        "GRD SAFE ZIP or preprocessed GeoTIFF",
+        type=["zip", "tif", "tiff"],
+    )
     if raster_file:
         raster_bytes = raster_file.getvalue()
         temp_dir = Path(tempfile.gettempdir()) / "hydroshield_ai"
         temp_dir.mkdir(exist_ok=True)
-        raster_path = temp_dir / raster_file.name
-        raster_path.write_bytes(raster_bytes)
+        if Path(raster_file.name).suffix.lower() == ".zip":
+            source_id = hashlib.sha256(raster_bytes).hexdigest()
+            source_path = temp_dir / f"{source_id}.zip"
+            source_path.write_bytes(raster_bytes)
+            processed_id = st.session_state.get("processed_safe_id")
+            processed_path = st.session_state.get("processed_safe_path")
+            if processed_id != source_id or not processed_path or not Path(processed_path).is_file():
+                st.info(
+                    "Preprocessing runs SNAP GPT locally. SNAP with the Sentinel-1 toolbox "
+                    "and SRTM DEM access must be installed and configured."
+                )
+                if st.button("Preprocess GRD SAFE with SNAP"):
+                    output_path = temp_dir / f"{source_id}_backscatter.tif"
+                    try:
+                        with st.spinner("Applying orbit and noise correction, calibration, and terrain correction..."):
+                            preprocess_sentinel1(source_path, output_path)
+                        st.session_state["processed_safe_id"] = source_id
+                        st.session_state["processed_safe_path"] = str(output_path)
+                        st.rerun()
+                    except (OSError, RuntimeError, ValueError) as exc:
+                        st.error(f"Sentinel-1 preprocessing failed: {exc}")
+                raster_path = None
+            else:
+                raster_path = Path(processed_path)
+        else:
+            raster_path = temp_dir / Path(raster_file.name).name
+            raster_path.write_bytes(raster_bytes)
     else:
         raster_path = None
 
@@ -176,7 +206,7 @@ if raster_path:
                 roads, shelters = load_vectors(roads_path, shelters_path, profile["crs"])
                 if start_enabled:
                     x, y = reproject_coords("EPSG:4326", profile["crs"], [lon], [lat])
-                    result, _, road_parts, flooded_roads = route(roads, shelters, mask, valid, profile["transform"], (x[0], y[0]))
+                    result, _, road_parts, flooded_roads = route(roads, shelters, mask, valid, profile["transform"], (x[0], y[0]), raster_crs=profile["crs"])
                 else:
                     result, road_parts, flooded_roads = None, [], []
                 if result:
@@ -217,7 +247,7 @@ if raster_path:
         st.error(f"Could not process this raster: {exc}")
 else:
     st.markdown("### Workflow\n**Sentinel-1 scene → preprocessing → flood mask → area-share analysis → risk-based notification → road overlay → shelter route**")
-    st.write("Upload a georeferenced Sentinel-1 GRD-derived GeoTIFF to begin. Supported inputs include calibrated VV/VH bands or other derived backscatter layers; the app does not ingest raw SAFE archives.")
+    st.write("Upload a zipped Sentinel-1 GRD SAFE product and preprocess it with SNAP GPT, or upload a calibrated, georeferenced backscatter GeoTIFF.")
 
 st.divider()
 st.caption("Prototype limitations: no scenes, labeled training data, roads, or shelter layers are bundled. Threshold and risk rules are demonstrative. Routing requires user-provided, CRS-tagged data and is not an emergency service.")
