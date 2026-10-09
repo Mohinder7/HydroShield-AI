@@ -270,3 +270,40 @@ export async function runRFPretrained(file, band = 1, valueScale = "dB") {
     if (!response.ok) throw new Error(data.detail || "RF-pretrained flood detection failed");
     return data;
 }
+
+/**
+ * Run flood detection using the BUNDLED PRETRAINED weights (no training, no upload).
+ * Loads random_forest_model.joblib + scaler.joblib from weights/ on the server.
+ */
+export async function detectFloodPretrainedBundled(band = 1, valueScale = "dB") {
+    const formData = new FormData();
+    formData.append("band", band);
+    formData.append("value_scale", valueScale);
+
+    const response = await fetch(`${API_URL}/flood/detect-pretrained-bundled`, {
+        method: "POST",
+        body: formData,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Pretrained RF bundled detection failed");
+    return data;
+}
+
+/**
+ * Run flood detection using the PRETRAINED weights on a user-uploaded raster.
+ * Loads random_forest_model.joblib + scaler.joblib from weights/ on the server.
+ */
+export async function detectFloodPretrained(file, band = 1, valueScale = "dB") {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("band", band);
+    formData.append("value_scale", valueScale);
+
+    const response = await fetch(`${API_URL}/flood/detect-pretrained`, {
+        method: "POST",
+        body: formData,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Pretrained RF detection failed");
+    return data;
+}

@@ -8,7 +8,7 @@ import {
     useMap,
 } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
-import { detectFloodBundled, getBundledShelters } from "../api";
+import { detectFloodBundled, detectFloodPretrainedBundled, getBundledShelters } from "../api";
 import Icon from "../components/Icon";
 
 // Raster coverage centre: Bihar/Gaya region
@@ -39,12 +39,29 @@ export default function FloodMap() {
     const [shelters, setShelters] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [method, setMethod] = useState("threshold"); // "threshold" | "pretrained"
+
+    async function runDetection(selectedMethod) {
+        setLoading(true);
+        setError(null);
+        setFloodData(null);
+        try {
+            const data = selectedMethod === "pretrained"
+                ? await detectFloodPretrainedBundled(1, "dB")
+                : await detectFloodBundled(1, -17, "dB");
+            setFloodData(data);
+        } catch (e) {
+            setError(e.message || "Could not load flood data.");
+        } finally {
+            setLoading(false);
+        }
+    }
 
     useEffect(() => {
         let cancelled = false;
         async function loadAll() {
             try {
-                // Load shelters
+                // Load shelters (non-fatal)
                 try {
                     const sf = await getBundledShelters();
                     const txt = await sf.text();
@@ -58,7 +75,7 @@ export default function FloodMap() {
                     if (!cancelled) setShelters(parsed);
                 } catch { /* non-fatal */ }
 
-                // Load flood data
+                // Initial flood detection
                 const data = await detectFloodBundled(1, -17, "dB");
                 if (!cancelled) setFloodData(data);
             } catch (e) {
@@ -85,6 +102,28 @@ export default function FloodMap() {
                     <span className="live-dot"></span>
                     {loading ? "Analyzing..." : riskLevel || "No risk data"}
                 </div>
+            </div>
+
+            {/* Detection method toggle */}
+            <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+                <button
+                    className={`btn${method === "threshold" ? " btn-primary" : " btn-secondary"}`}
+                    onClick={() => { setMethod("threshold"); runDetection("threshold"); }}
+                    disabled={loading}
+                    style={{ display: "flex", alignItems: "center", gap: 6 }}
+                >
+                    <Icon name="filter" size={14} />
+                    SAR Threshold
+                </button>
+                <button
+                    className={`btn${method === "pretrained" ? " btn-primary" : " btn-secondary"}`}
+                    onClick={() => { setMethod("pretrained"); runDetection("pretrained"); }}
+                    disabled={loading}
+                    style={{ display: "flex", alignItems: "center", gap: 6 }}
+                >
+                    <Icon name="cpu" size={14} />
+                    Pretrained Random Forest
+                </button>
             </div>
 
             {error && (
@@ -187,7 +226,7 @@ export default function FloodMap() {
                 {/* Stats bar below map */}
                 {floodData && (
                     <div style={{display: "flex", gap: 24, padding: "16px 20px", borderTop: "1px solid #e2e8f0", flexWrap: "wrap"}}>
-                        <div><span style={{fontSize: "0.75rem", color: "#64748b"}}>Method</span><br /><strong style={{fontSize: "0.9rem"}}>SAR Threshold (-17 dB)</strong></div>
+                        <div><span style={{fontSize: "0.75rem", color: "#64748b"}}>Method</span><br /><strong style={{fontSize: "0.9rem"}}>{method === "pretrained" ? "Pretrained Random Forest" : "SAR Threshold (-17 dB)"}</strong></div>
                         {floodData.flooded_area_km2 != null && <div><span style={{fontSize: "0.75rem", color: "#64748b"}}>Flooded Area</span><br /><strong style={{fontSize: "0.9rem"}}>{Number(floodData.flooded_area_km2).toFixed(2)} km&#178;</strong></div>}
                         {floodData.flooded_percentage != null && <div><span style={{fontSize: "0.75rem", color: "#64748b"}}>Flood Coverage</span><br /><strong style={{fontSize: "0.9rem"}}>{Number(floodData.flooded_percentage).toFixed(1)}%</strong></div>}
                         <div><span style={{fontSize: "0.75rem", color: "#64748b"}}>Risk Level</span><br /><strong style={{fontSize: "0.9rem", color: riskCol}}>{riskLevel || "—"}</strong></div>

@@ -20,8 +20,11 @@ from src.pipeline import (
     db_features,
     extract_sar_features,
     FEATURE_NAMES,
+    load_pretrained_model,
     otsu_threshold,
     predict,
+    PRETRAINED_MODEL_PATH,
+    PRETRAINED_SCALER_PATH,
     raster_info,
     read_features,
     read_features_tiled,
@@ -1235,6 +1238,147 @@ def rf_pretrained_detection(
         )
     finally:
         raster_path.unlink(missing_ok=True)
+
+
+@app.post("/api/flood/detect-pretrained")
+def detect_flood_pretrained(
+    file: UploadFile = File(...),
+    band: int = Form(1),
+    value_scale: str = Form("dB"),
+):
+    """
+    Run flood detection using the bundled pretrained Random Forest weights.
+    No label upload needed — just the SAR raster.
+
+    Pipeline:
+      1. Load pretrained RF + StandardScaler from weights/.
+      2. Read SAR raster via tiled loader.
+      3. Extract 6 SAR texture features per valid pixel.
+      4. Apply StandardScaler (required by the pretrained model).
+      5. Predict flood mask in chunks.
+      6. Return flood stats + risk summary.
+    """
+    if not PRETRAINED_MODEL_PATH.is_file() or not PRETRAINED_SCALER_PATH.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Pretrained weights not found on server. "
+                f"Expected: {PRETRAINED_MODEL_PATH} and {PRETRAINED_SCALER_PATH}"
+            ),
+        )
+
+    raster_path = save_uploaded_file(file, "pretrained")
+    try:
+        info = raster_info(raster_path)
+        if band < 1 or band > info["bands"]:
+            raise HTTPException(status_code=400, detail=f"Band must be between 1 and {info['bands']}.")
+
+        pt_model, pt_scaler = load_pretrained_model()
+
+        features, valid, profile = read_features_tiled(raster_path, [band])
+        if not valid.any():
+            raise HTTPException(status_code=400, detail="The raster band contains no valid pixels.")
+
+        mask = predict(pt_model, features, valid, value_scale, use_texture=True, scaler=pt_scaler)
+
+        flooded_pixels = int(mask.sum())
+        valid_pixels   = int(valid.sum())
+        percentage     = 100.0 * flooded_pixels / max(valid_pixels, 1)
+
+        result = {
+            "success":            True,
+            "method":             "Pretrained Random Forest (bundled weights)",
+            "n_estimators":       pt_model.n_estimators,
+            "features":           FEATURE_NAMES,
+            "flooded_pixels":     flooded_pixels,
+            "valid_pixels":       valid_pixels,
+            "flooded_percentage": round(percentage, 4),
+        }
+        try:
+            flooded_area = calculate_area(mask & valid, profile)
+            total_area   = calculate_area(valid, profile)
+            risk         = risk_summary(flooded_area, total_area, percentage)
+            result["flooded_area_km2"] = round(flooded_area, 4)
+            result["total_area_km2"]   = round(total_area, 4)
+            result["risk"]             = risk
+        except ValueError as exc:
+            result["area_error"] = str(exc)
+            result["risk"]       = None
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Pretrained RF detection failed: {exc}")
+    finally:
+        raster_path.unlink(missing_ok=True)
+
+
+@app.post("/api/flood/detect-pretrained-bundled")
+def detect_flood_pretrained_bundled(
+    band: int = Form(1),
+    value_scale: str = Form("dB"),
+):
+    """
+    Run pretrained RF flood detection on the bundled SAR raster — no upload needed.
+    """
+    if not BUNDLED_RASTER_PATH.exists():
+        raise HTTPException(status_code=404, detail="Bundled SAR raster not found on server.")
+    if not PRETRAINED_MODEL_PATH.is_file() or not PRETRAINED_SCALER_PATH.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail="Pretrained weights not found on server.",
+        )
+    try:
+        info = raster_info(BUNDLED_RASTER_PATH)
+        if band < 1 or band > info["bands"]:
+            raise HTTPException(status_code=400, detail=f"Band must be between 1 and {info['bands']}.")
+
+        pt_model, pt_scaler = load_pretrained_model()
+
+        features, valid, profile = read_features_tiled(BUNDLED_RASTER_PATH, [band])
+        if not valid.any():
+            raise HTTPException(status_code=400, detail="No valid pixels in bundled raster.")
+
+        # Auto-detect dB vs linear scale
+        detected_scale = _auto_detect_scale(features[valid, 0])
+        eff_scale      = detected_scale if value_scale == "dB" else value_scale
+
+        mask = predict(pt_model, features, valid, eff_scale, use_texture=True, scaler=pt_scaler)
+
+        flooded_pixels = int(mask.sum())
+        valid_pixels   = int(valid.sum())
+        percentage     = 100.0 * flooded_pixels / max(valid_pixels, 1)
+
+        result = {
+            "success":            True,
+            "method":             "Pretrained Random Forest (bundled weights)",
+            "n_estimators":       pt_model.n_estimators,
+            "features":           FEATURE_NAMES,
+            "value_scale":        eff_scale,
+            "detected_scale":     detected_scale,
+            "flooded_pixels":     flooded_pixels,
+            "valid_pixels":       valid_pixels,
+            "flooded_percentage": round(percentage, 4),
+            "source":             "bundled",
+            "filename":           _RASTER_FILENAME,
+        }
+        try:
+            flooded_area = calculate_area(mask & valid, profile)
+            total_area   = calculate_area(valid, profile)
+            risk         = risk_summary(flooded_area, total_area, percentage)
+            result["flooded_area_km2"] = round(flooded_area, 4)
+            result["total_area_km2"]   = round(total_area, 4)
+            result["risk"]             = risk
+        except ValueError as exc:
+            result["area_error"] = str(exc)
+            result["risk"]       = None
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Bundled pretrained RF detection failed: {exc}")
 
 
 @app.post("/api/assistant")
