@@ -307,3 +307,37 @@ export async function detectFloodPretrained(file, band = 1, valueScale = "dB") {
     if (!response.ok) throw new Error(data.detail || "Pretrained RF detection failed");
     return data;
 }
+
+// ─── GEE pretrained RF model ─────────────────────────────────────────────────
+
+/**
+ * GET /api/model/status
+ * Returns model readiness, feature names, raster availability, and diagnostics.
+ */
+export async function getModelStatus() {
+    const response = await fetch(`${API_URL}/model/status`);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Could not fetch model status");
+    return data;
+}
+
+/**
+ * POST /api/flood/predict
+ * Run the GEE-based pretrained RF over the configured feature raster.
+ * Returns candidate_pixels, candidate_percentage, raster metadata, output_filename.
+ *
+ * @param {string|null} outputFilename  Optional output stem (letters/digits/-_ only).
+ */
+export async function runGeeRFPredict(outputFilename = null) {
+    const body = {};
+    if (outputFilename) body.output_filename = outputFilename;
+
+    const response = await fetch(`${API_URL}/flood/predict`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "GEE RF prediction failed");
+    return data;
+}

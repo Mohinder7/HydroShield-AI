@@ -1,0 +1,35 @@
+{
+  "model_version": "1.0.0",
+  "training_date": "2026",
+  "algorithm": "RandomForestClassifier",
+  "n_estimators": 100,
+  "random_state": 42,
+  "class_weight": "balanced",
+  "scaler": "StandardScaler",
+  "feature_names": [
+    "beforeVV",
+    "afterVV",
+    "beforeVH",
+    "afterVH",
+    "vvChange",
+    "vhChange"
+  ],
+  "feature_order_note": "Band order must match exactly. All values expected in dB (log10 scale). vvChange = afterVV - beforeVV, vhChange = afterVH - beforeVH.",
+  "classes": {
+    "0": "non-candidate",
+    "1": "flood-candidate"
+  },
+  "label_warning": "Training labels are threshold-generated flood candidates derived from Sentinel-1 SAR backscatter change detection via Google Earth Engine. They are NOT independently verified flood ground truth. Do not treat model outputs as confirmed flooding.",
+  "training_data": {
+    "feature_raster": "patna_s1_features_aug2026.tif",
+    "mask_raster": "patna_flood_candidates_aug2026.tif",
+    "expected_bands": 6,
+    "expected_crs": "EPSG:32645",
+    "approximate_size": "3348 x 2262 pixels"
+  },
+  "artifact_files": {
+    "model": "weights/random_forest_model.joblib",
+    "scaler": "weights/scaler.joblib",
+    "metadata": "model_meta.json"
+  }
+}

@@ -47,3 +47,11 @@ frontend/src/assets/vite.svg
 # Large binary datasets (too big for GitHub — use Git LFS or external storage)
 datasets/sar/*.tif
 datasets/sar/*.tiff
+
+# GEE feature rasters and candidate masks (large; place in datasets/ locally)
+datasets/**/*features*.tif
+datasets/**/*candidates*.tif
+
+# Generated prediction rasters
+outputs/predictions/
+EPICS--main/outputs/predictions/

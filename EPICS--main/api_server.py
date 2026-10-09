@@ -32,6 +32,11 @@ from src.pipeline import (
     threshold_mask,
     train_random_forest,
 )
+from src.model_service import (
+    ensure_loaded as _ms_ensure_loaded,
+    get_model_status,
+    predict_flood_candidates,
+)
 from src.preprocessing import (
     SnapProcessingError,
     SnapUnavailableError,
@@ -79,6 +84,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ============================================================
+# STARTUP — warm the GEE model cache
+# ============================================================
+
+@app.on_event("startup")
+async def _startup() -> None:
+    """Load the GEE RF model at server startup so the first request is fast."""
+    import asyncio
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _ms_ensure_loaded)
 
 
 # ============================================================
@@ -1379,6 +1396,105 @@ def detect_flood_pretrained_bundled(
         raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Bundled pretrained RF detection failed: {exc}")
+
+
+# ============================================================
+# GEE RANDOM FOREST — MODEL STATUS
+# ============================================================
+
+@app.get("/api/model/status")
+def model_status():
+    """
+    Report whether the GEE-based pretrained RF model is ready.
+
+    Returns model version, expected feature names, whether the GEE feature
+    raster is accessible, and clear diagnostics if anything is missing.
+    """
+    try:
+        status = get_model_status()
+        return status
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not retrieve model status: {exc}",
+        )
+
+
+# ============================================================
+# GEE RANDOM FOREST — FLOOD-CANDIDATE PREDICTION
+# ============================================================
+
+class PredictRequest(BaseModel):
+    output_filename: str | None = Field(
+        default=None,
+        description="Optional output filename stem (no extension, no path). "
+                    "Defaults to a UUID-based name.",
+        max_length=128,
+        pattern=r"^[A-Za-z0-9_\-]*$",
+    )
+
+
+@app.post("/api/flood/predict")
+def flood_predict(request: PredictRequest = PredictRequest()):
+    """
+    Run the GEE-based pretrained Random Forest over the configured feature raster.
+
+    Pipeline
+    --------
+    1. Locate patna_s1_features_aug2026.tif (env var or well-known path).
+    2. Validate 6-band feature order (beforeVV/afterVV/beforeVH/afterVH/vvChange/vhChange).
+    3. Apply StandardScaler then predict in 256-row tiles / 500 k-pixel chunks.
+    4. Write georeferenced uint8 output GeoTIFF to outputs/predictions/.
+    5. Return statistics and the output filename.
+
+    Note: outputs are labelled "flood-candidate pixels", NOT confirmed flooding.
+    The training labels are threshold-generated candidates from GEE.
+    """
+    try:
+        result = predict_flood_candidates(
+            output_filename=request.output_filename,
+        )
+        return {
+            "success":              True,
+            "method":               "GEE Random Forest (pretrained)",
+            "feature_names":        ["beforeVV", "afterVV", "beforeVH",
+                                     "afterVH", "vvChange", "vhChange"],
+            "candidate_pixels":     result["candidate_pixels"],
+            "valid_pixels":         result["valid_pixels"],
+            "candidate_percentage": result["candidate_percentage"],
+            "raster":               result["raster"],
+            "output_filename":      result["output_filename"],
+            "label_warning": (
+                "Output pixels labelled 1 are flood CANDIDATES based on "
+                "SAR backscatter change detection. They are not confirmed flooding."
+            ),
+        }
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"{exc}\n\n"
+                "To fix: download patna_s1_features_aug2026.tif from Google Drive "
+                "and place it in EPICS--main/datasets/, or set "
+                "HYDROSHIELD_FEATURE_RASTER=/absolute/path/to/file.tif "
+                "in your .env file."
+            ),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Model not ready: {exc}",
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Prediction failed: {exc}",
+        )
 
 
 @app.post("/api/assistant")

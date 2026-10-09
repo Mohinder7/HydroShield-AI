@@ -2,8 +2,10 @@ import { useState } from "react";
 import {
     detectFlood,
     detectFloodBundled,
+    getModelStatus,
     getRasterInfo,
     preprocessSentinel1,
+    runGeeRFPredict,
     runRFPretrained,
     runRFPretrainedBundled,
 } from "../api";
@@ -36,6 +38,13 @@ function Analytics() {
     const [rfLoading,    setRfLoading]    = useState(false);
     const [rfResult,     setRfResult]     = useState(null);
     const [rfError,      setRfError]      = useState("");
+
+    // ── GEE RF tab ────────────────────────────────────────────────────────
+    const [geeStatus,    setGeeStatus]    = useState(null);
+    const [geeStatusErr, setGeeStatusErr] = useState("");
+    const [geeLoading,   setGeeLoading]   = useState(false);
+    const [geeResult,    setGeeResult]    = useState(null);
+    const [geeError,     setGeeError]     = useState("");
 
     // ── helpers ───────────────────────────────────────────────────────────
     const fmt    = (v, d = 2) =>
@@ -165,6 +174,35 @@ function Analytics() {
     };
 
     // ══════════════════════════════════════════════════════════════════════
+    //  GEE RF TAB HANDLERS
+    // ══════════════════════════════════════════════════════════════════════
+
+    const handleCheckGeeStatus = async () => {
+        setGeeStatusErr("");
+        setGeeStatus(null);
+        try {
+            const data = await getModelStatus();
+            setGeeStatus(data);
+        } catch (e) {
+            setGeeStatusErr(e.message || "Could not fetch model status.");
+        }
+    };
+
+    const handleRunGeePredict = async () => {
+        setGeeLoading(true);
+        setGeeError("");
+        setGeeResult(null);
+        try {
+            const data = await runGeeRFPredict();
+            setGeeResult(data);
+        } catch (e) {
+            setGeeError(e.message || "GEE RF prediction failed.");
+        } finally {
+            setGeeLoading(false);
+        }
+    };
+
+    // ══════════════════════════════════════════════════════════════════════
     //  RENDER
     // ══════════════════════════════════════════════════════════════════════
     return (
@@ -192,6 +230,12 @@ function Analytics() {
                     onClick={() => setActiveTab("rf")}
                 >
                     <Icon name="layers" size={16} /> Random Forest (Pretrained)
+                </button>
+                <button
+                    className={`analytics-tab${activeTab === "gee" ? " active" : ""}`}
+                    onClick={() => { setActiveTab("gee"); if (!geeStatus) handleCheckGeeStatus(); }}
+                >
+                    <Icon name="cpu" size={16} /> GEE RF Flood Candidates
                 </button>
             </div>
 
@@ -933,6 +977,338 @@ function Analytics() {
                                 <strong>Run Random Forest (Bundled)</strong>{" "}
                                 to train and classify the Patna SAR
                                 dataset — no upload needed.
+                            </p>
+                        </div>
+                    )}
+                </>
+            )}
+
+            {/* ════════════════════════════════════════════════════════════
+                GEE RF FLOOD CANDIDATES TAB
+            ════════════════════════════════════════════════════════════ */}
+            {activeTab === "gee" && (
+                <>
+                    <div className="analytics-grid">
+
+                        {/* ── Controls card ────────────────────────────── */}
+                        <div className="analytics-card analysis-controls">
+                            <div className="card-title">
+                                <div>
+                                    <h2>GEE RF Flood-Candidate Prediction</h2>
+                                    <p>
+                                        Uses a Random Forest trained on six
+                                        Sentinel-1 change-detection features
+                                        exported from Google Earth Engine.
+                                        No upload needed — runs on the
+                                        configured server-side feature raster.
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* Model status */}
+                            <div className="bundled-info-box">
+                                <Icon name="cpu" size={18} />
+                                <div>
+                                    <strong>Pretrained GEE Random Forest</strong>
+                                    <span>
+                                        Features: beforeVV · afterVV · beforeVH
+                                        · afterVH · vvChange · vhChange
+                                    </span>
+                                </div>
+                            </div>
+
+                            <button
+                                className="primary-action"
+                                style={{ marginBottom: 8 }}
+                                onClick={handleCheckGeeStatus}
+                                disabled={geeLoading}
+                            >
+                                ↻ Check Model Status
+                            </button>
+
+                            {geeStatusErr && (
+                                <div className="analytics-error">{geeStatusErr}</div>
+                            )}
+
+                            {geeStatus && (
+                                <div
+                                    className="analytics-card"
+                                    style={{ margin: "8px 0", padding: "12px 16px" }}
+                                >
+                                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+                                        <span
+                                            style={{
+                                                padding: "2px 10px",
+                                                borderRadius: 12,
+                                                fontSize: "0.78rem",
+                                                fontWeight: 600,
+                                                background: geeStatus.model_ready ? "#dcfce7" : "#fee2e2",
+                                                color: geeStatus.model_ready ? "#166534" : "#991b1b",
+                                            }}
+                                        >
+                                            {geeStatus.model_ready ? "✓ Model ready" : "✗ Model not ready"}
+                                        </span>
+                                        <span
+                                            style={{
+                                                padding: "2px 10px",
+                                                borderRadius: 12,
+                                                fontSize: "0.78rem",
+                                                fontWeight: 600,
+                                                background: geeStatus.feature_raster_found ? "#dcfce7" : "#fef9c3",
+                                                color: geeStatus.feature_raster_found ? "#166534" : "#854d0e",
+                                            }}
+                                        >
+                                            {geeStatus.feature_raster_found
+                                                ? "✓ Feature raster found"
+                                                : "⚠ Feature raster missing"}
+                                        </span>
+                                    </div>
+                                    <div className="details-grid" style={{ fontSize: "0.82rem" }}>
+                                        <div>
+                                            <span>Version</span>
+                                            <strong>{geeStatus.model_version}</strong>
+                                        </div>
+                                        <div>
+                                            <span>Trees</span>
+                                            <strong>{geeStatus.n_estimators ?? "—"}</strong>
+                                        </div>
+                                        <div>
+                                            <span>Features</span>
+                                            <strong>{geeStatus.feature_names?.join(", ")}</strong>
+                                        </div>
+                                        {geeStatus.model_error && (
+                                            <div style={{ gridColumn: "1/-1" }}>
+                                                <span>Error</span>
+                                                <strong style={{ color: "#dc2626", wordBreak: "break-all" }}>
+                                                    {geeStatus.model_error}
+                                                </strong>
+                                            </div>
+                                        )}
+                                        {!geeStatus.feature_raster_found && (
+                                            <div style={{ gridColumn: "1/-1" }}>
+                                                <span>Fix</span>
+                                                <strong style={{ color: "#92400e" }}>
+                                                    Place patna_s1_features_aug2026.tif in
+                                                    EPICS--main/datasets/ or set
+                                                    HYDROSHIELD_FEATURE_RASTER in .env
+                                                </strong>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+
+                            <button
+                                className="primary-action"
+                                onClick={handleRunGeePredict}
+                                disabled={geeLoading}
+                                style={{ marginTop: 8 }}
+                            >
+                                {geeLoading
+                                    ? "Running inference…"
+                                    : "▶ Run GEE RF Prediction"}
+                            </button>
+
+                            {geeError && (
+                                <div className="analytics-error" style={{ marginTop: 8 }}>
+                                    {geeError}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* ── Method card ───────────────────────────────── */}
+                        <div className="analytics-card method-card">
+                            <div className="card-title">
+                                <div>
+                                    <h2>GEE RF Method</h2>
+                                    <p>Change-detection feature classification</p>
+                                </div>
+                            </div>
+                            <div className="method-item">
+                                <span>Algorithm</span>
+                                <strong>Random Forest (100 trees)</strong>
+                            </div>
+                            <div className="method-item">
+                                <span>Features</span>
+                                <strong>6 GEE change-detection bands</strong>
+                            </div>
+                            <div className="method-item">
+                                <span>Scaler</span>
+                                <strong>StandardScaler (pre-fitted)</strong>
+                            </div>
+                            <div className="method-item">
+                                <span>Training</span>
+                                <strong>Sentinel-1 Aug 2026 (Patna)</strong>
+                            </div>
+                            <div className="method-item">
+                                <span>Labels</span>
+                                <strong>Threshold-generated candidates</strong>
+                            </div>
+                            <div className="method-item">
+                                <span>Output</span>
+                                <strong>Georeferenced uint8 GeoTIFF</strong>
+                            </div>
+                            <div
+                                className="analytics-error"
+                                style={{
+                                    marginTop: 12,
+                                    fontSize: "0.78rem",
+                                    background: "#fef9c3",
+                                    color: "#92400e",
+                                    border: "1px solid #fde68a",
+                                }}
+                            >
+                                ⚠ Outputs are flood CANDIDATES from SAR
+                                change detection — not confirmed flooding.
+                                Do not use as operational flood extent.
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* ── GEE results ───────────────────────────────────── */}
+                    {geeResult && (
+                        <>
+                            <div className="analytics-section-heading">
+                                <div>
+                                    <h2>GEE RF Prediction Results</h2>
+                                    <p>
+                                        Flood-candidate classification using
+                                        pretrained GEE Random Forest.
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div className="analytics-stat-grid">
+                                <div className="analytics-stat-card">
+                                    <span>Candidate Pixels</span>
+                                    <strong>{fmt(geeResult.candidate_pixels, 0)}</strong>
+                                    <small>Class 1 predictions</small>
+                                </div>
+                                <div className="analytics-stat-card">
+                                    <span>Valid Pixels</span>
+                                    <strong>{fmt(geeResult.valid_pixels, 0)}</strong>
+                                    <small>Pixels with all 6 features</small>
+                                </div>
+                                <div className="analytics-stat-card">
+                                    <span>Candidate %</span>
+                                    <strong>{fmt(geeResult.candidate_percentage)}</strong>
+                                    <small>% of valid pixels</small>
+                                </div>
+                                <div className="analytics-stat-card">
+                                    <span>Output File</span>
+                                    <strong style={{ fontSize: "0.8rem", wordBreak: "break-all" }}>
+                                        {geeResult.output_filename}
+                                    </strong>
+                                    <small>Saved on server</small>
+                                </div>
+                            </div>
+
+                            <div className="analytics-card distribution-card">
+                                <div className="card-title">
+                                    <div>
+                                        <h2>Candidate Distribution</h2>
+                                        <p>Candidate vs non-candidate valid pixels</p>
+                                    </div>
+                                </div>
+                                <div className="distribution-bars">
+                                    <div className="distribution-row">
+                                        <div className="distribution-label">
+                                            <span>Flood candidates (class 1)</span>
+                                            <strong>{fmt(geeResult.candidate_pixels, 0)}</strong>
+                                        </div>
+                                        <div className="distribution-track">
+                                            <div
+                                                className="distribution-fill flooded"
+                                                style={{
+                                                    width: `${Math.min(100, Number(geeResult.candidate_percentage || 0))}%`,
+                                                }}
+                                            />
+                                        </div>
+                                    </div>
+                                    <div className="distribution-row">
+                                        <div className="distribution-label">
+                                            <span>Non-candidates (class 0)</span>
+                                            <strong>
+                                                {fmt(
+                                                    Math.max(0,
+                                                        Number(geeResult.valid_pixels || 0) -
+                                                        Number(geeResult.candidate_pixels || 0)
+                                                    ),
+                                                    0
+                                                )}
+                                            </strong>
+                                        </div>
+                                        <div className="distribution-track">
+                                            <div
+                                                className="distribution-fill safe"
+                                                style={{
+                                                    width: `${Math.max(0, 100 - Number(geeResult.candidate_percentage || 0))}%`,
+                                                }}
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="analytics-card">
+                                <div className="card-title">
+                                    <div>
+                                        <h2>Raster Details</h2>
+                                        <p>Output GeoTIFF metadata</p>
+                                    </div>
+                                </div>
+                                <div className="details-grid">
+                                    <div>
+                                        <span>Width × Height</span>
+                                        <strong>
+                                            {geeResult.raster?.width} × {geeResult.raster?.height}
+                                        </strong>
+                                    </div>
+                                    <div>
+                                        <span>CRS</span>
+                                        <strong>{geeResult.raster?.crs}</strong>
+                                    </div>
+                                    <div>
+                                        <span>Method</span>
+                                        <strong>{geeResult.method}</strong>
+                                    </div>
+                                    <div>
+                                        <span>Features</span>
+                                        <strong>{geeResult.feature_names?.join(", ")}</strong>
+                                    </div>
+                                </div>
+                                <div
+                                    className="analytics-error"
+                                    style={{
+                                        marginTop: 12,
+                                        fontSize: "0.78rem",
+                                        background: "#fef9c3",
+                                        color: "#92400e",
+                                        border: "1px solid #fde68a",
+                                    }}
+                                >
+                                    {geeResult.label_warning}
+                                </div>
+                            </div>
+                        </>
+                    )}
+
+                    {!geeResult && !geeLoading && (
+                        <div className="analytics-empty">
+                            <div className="empty-icon">
+                                <Icon name="cpu" size={25} />
+                            </div>
+                            <h2>GEE RF ready</h2>
+                            <p>
+                                Check model status, then click{" "}
+                                <strong>Run GEE RF Prediction</strong> to
+                                classify the configured feature raster.
+                                The feature raster (
+                                <code>patna_s1_features_aug2026.tif</code>)
+                                must be placed in{" "}
+                                <code>EPICS--main/datasets/</code> or
+                                configured via{" "}
+                                <code>HYDROSHIELD_FEATURE_RASTER</code>.
                             </p>
                         </div>
                     )}
