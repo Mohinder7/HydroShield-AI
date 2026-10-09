@@ -11,8 +11,9 @@ import streamlit as st
 from rasterio.warp import transform as reproject_coords
 from streamlit_folium import st_folium
 
-from src.pipeline import (calculate_area, predict, raster_info, read_features, risk_summary,
-                          save_mask, threshold_mask, train_random_forest)
+from src.pipeline import (calculate_area, load_pretrained_model, predict, raster_info,
+                          read_features, risk_summary, save_mask, threshold_mask,
+                          train_random_forest, PRETRAINED_MODEL_PATH, PRETRAINED_SCALER_PATH)
 from src.preprocessing import preprocess_sentinel1
 from src.routing import load_vectors, route
 
@@ -112,13 +113,54 @@ if raster_path:
             plt.close(fig)
 
         st.header("2 · Flood detection")
-        method = st.radio("Detection method", ["Exploratory SAR threshold", "Train Random Forest from aligned labels"], horizontal=True)
+        method = st.radio(
+            "Detection method",
+            [
+                "Exploratory SAR threshold",
+                "Pretrained Random Forest (bundled weights)",
+                "Train Random Forest from aligned labels",
+            ],
+            horizontal=True,
+        )
+
         if method.startswith("Exploratory"):
             threshold = st.slider("Backscatter threshold (dB)", -30.0, -5.0, -17.0, 0.5,
                                   help="Prototype heuristic only. A low-backscatter signature is not sufficient to validate floodwater.")
             mask, _ = threshold_mask(features, valid, threshold, value_scale)
             st.caption("Method: pixels in the selected band below the chosen dB threshold. This exploratory water-candidate mask may confuse permanent water, shadows, and other low-backscatter surfaces with floodwater.")
+
+        elif method.startswith("Pretrained"):
+            # ── Pretrained RF path ────────────────────────────────────────────
+            weights_available = PRETRAINED_MODEL_PATH.is_file() and PRETRAINED_SCALER_PATH.is_file()
+            if not weights_available:
+                st.error(
+                    "Pretrained weights not found. "
+                    f"Expected:\n- `{PRETRAINED_MODEL_PATH}`\n- `{PRETRAINED_SCALER_PATH}`\n\n"
+                    "Place both `.joblib` files in the `weights/` directory and reload."
+                )
+                st.stop()
+
+            with st.spinner("Loading pretrained Random Forest weights…"):
+                try:
+                    pt_model, pt_scaler = load_pretrained_model()
+                except (FileNotFoundError, ValueError) as exc:
+                    st.error(f"Failed to load pretrained weights: {exc}")
+                    st.stop()
+
+            st.success(
+                f"Pretrained model loaded — {pt_model.n_estimators} trees, "
+                f"6 SAR texture features, StandardScaler applied automatically."
+            )
+            st.caption(
+                "The bundled weights were trained on Sentinel-1 GRD backscatter data. "
+                "Predictions may differ from locally trained models depending on scene characteristics."
+            )
+
+            with st.spinner("Running pretrained model inference…"):
+                mask = predict(pt_model, features, valid, value_scale, use_texture=True, scaler=pt_scaler)
+
         else:
+            # ── Train from labels path ────────────────────────────────────────
             label_file = st.file_uploader("Aligned label GeoTIFF (0 non-flood, 1 flood)", type=["tif", "tiff"], key="labels")
             if not label_file:
                 st.warning("Training requires a label raster spatially aligned to this scene. No mask or result has been generated yet.")

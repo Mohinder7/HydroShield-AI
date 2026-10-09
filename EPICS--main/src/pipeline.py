@@ -27,8 +27,10 @@ from __future__ import annotations
 
 import math
 from functools import lru_cache
+from pathlib import Path
 from typing import Generator
 
+import joblib
 import numpy as np
 import rasterio
 import rasterio.windows
@@ -41,6 +43,11 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
+
+# ── default weights paths (relative to this file's package root) ──────────────
+_WEIGHTS_DIR = Path(__file__).resolve().parent.parent / "weights"
+PRETRAINED_MODEL_PATH = _WEIGHTS_DIR / "random_forest_model.joblib"
+PRETRAINED_SCALER_PATH = _WEIGHTS_DIR / "scaler.joblib"
 
 # ── tunables ──────────────────────────────────────────────────────────────────
 MAX_TRAIN_PIXELS = 200_000   # cap for RF training (stratified sub-sample)
@@ -296,6 +303,72 @@ FEATURE_NAMES = [
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  PRETRAINED MODEL LOADING
+# ══════════════════════════════════════════════════════════════════════════════
+
+def load_pretrained_model(
+    model_path: str | Path | None = None,
+    scaler_path: str | Path | None = None,
+):
+    """
+    Load the pretrained Random Forest classifier and its companion StandardScaler
+    from disk.
+
+    Parameters
+    ----------
+    model_path  : Path to ``random_forest_model.joblib``.
+                  Defaults to ``weights/random_forest_model.joblib`` next to
+                  the package root.
+    scaler_path : Path to ``scaler.joblib``.
+                  Defaults to ``weights/scaler.joblib`` next to the package root.
+
+    Returns
+    -------
+    (model, scaler)
+        model  – fitted RandomForestClassifier
+        scaler – fitted StandardScaler (must be applied before predict)
+
+    Raises
+    ------
+    FileNotFoundError  if either weight file is missing.
+    ValueError         if the model's expected feature count doesn't match
+                       the pipeline's FEATURE_NAMES (6).
+    """
+    model_path  = Path(model_path)  if model_path  else PRETRAINED_MODEL_PATH
+    scaler_path = Path(scaler_path) if scaler_path else PRETRAINED_SCALER_PATH
+
+    if not model_path.is_file():
+        raise FileNotFoundError(
+            f"Pretrained model not found: {model_path}\n"
+            "Place random_forest_model.joblib inside the weights/ directory."
+        )
+    if not scaler_path.is_file():
+        raise FileNotFoundError(
+            f"Pretrained scaler not found: {scaler_path}\n"
+            "Place scaler.joblib inside the weights/ directory."
+        )
+
+    model  = joblib.load(model_path)
+    scaler = joblib.load(scaler_path)
+
+    expected_features = len(FEATURE_NAMES)
+    if model.n_features_in_ != expected_features:
+        raise ValueError(
+            f"Pretrained model expects {model.n_features_in_} features but the "
+            f"pipeline produces {expected_features} ({FEATURE_NAMES}). "
+            "The weights file may be from an incompatible pipeline version."
+        )
+    if scaler.n_features_in_ != expected_features:
+        raise ValueError(
+            f"Pretrained scaler expects {scaler.n_features_in_} features but the "
+            f"pipeline produces {expected_features}. "
+            "The weights file may be from an incompatible pipeline version."
+        )
+
+    return model, scaler
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  THRESHOLD-BASED FLOOD MASK  (fast baseline)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -406,9 +479,22 @@ def train_random_forest(features, valid, labels, value_scale="dB",
     return model, good, metrics
 
 
-def predict(model, features, valid, value_scale="dB", use_texture=True):
+def predict(model, features, valid, value_scale="dB", use_texture=True, scaler=None):
     """
-    Predict flood mask using the trained RF model.
+    Predict flood mask using the trained (or pretrained) RF model.
+
+    Parameters
+    ----------
+    model       : fitted RandomForestClassifier
+    features    : H×W×B raw raster stack
+    valid       : H×W bool mask of valid pixels
+    value_scale : "dB" or "Linear power"
+    use_texture : extract the 6-feature texture matrix (True) or use raw
+                  dB band only (False, legacy)
+    scaler      : optional fitted StandardScaler — when provided its
+                  transform() is applied to the feature matrix before
+                  prediction.  Pass the scaler returned by
+                  load_pretrained_model() when using pretrained weights.
 
     Prediction is done in PREDICT_CHUNK-sized batches to avoid
     materialising a huge temporary array for large rasters.
@@ -420,6 +506,10 @@ def predict(model, features, valid, value_scale="dB", use_texture=True):
         x_all   = extract_sar_features(db_band, valid)     # N×6
     else:
         x_all   = db_features(features, value_scale)[valid]
+
+    # Apply scaler if provided (required for pretrained weights)
+    if scaler is not None:
+        x_all = scaler.transform(x_all)
 
     n = len(x_all)
     preds = np.empty(n, dtype="uint8")
