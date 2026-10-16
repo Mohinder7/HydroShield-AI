@@ -1,6 +1,6 @@
 {
   "model_version": "1.0.0",
-  "training_date": "2026",
+  "training_date": "2026-10-14T03:56:00Z",
   "algorithm": "RandomForestClassifier",
   "n_estimators": 100,
   "random_state": 42,
@@ -31,5 +31,14 @@
     "model": "weights/random_forest_model.joblib",
     "scaler": "weights/scaler.joblib",
     "metadata": "model_meta.json"
+  },
+  "holdout_metrics": {
+    "accuracy": 0.995,
+    "precision": 0.7966,
+    "recall": 0.9076,
+    "f1": 0.8485,
+    "iou": 0.7368,
+    "train_pixels": 159999,
+    "test_pixels": 40000
   }
 }

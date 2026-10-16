@@ -8,6 +8,11 @@ from openai import APIConnectionError, APIStatusError, OpenAI, RateLimitError
 from pydantic import BaseModel, Field
 from rasterio.warp import transform as reproject_coords
 from starlette.background import BackgroundTask
+import base64
+from io import BytesIO
+from PIL import Image
+from rasterio.enums import Resampling
+from rasterio.warp import transform_bounds
 
 import rasterio
 
@@ -785,7 +790,9 @@ _SHELTERS_FILENAME = "patna_shelters.geojson"
 
 BUNDLED_RASTER_PATH   = DATASETS_DIR / "sar"      / _RASTER_FILENAME
 BUNDLED_ROADS_PATH    = DATASETS_DIR / "roads"    / _ROADS_FILENAME
-BUNDLED_SHELTERS_PATH = DATASETS_DIR / "shelters" / _SHELTERS_FILENAME
+BUNDLED_SHELTERS_PATH = (
+    DATASETS_DIR / "shelters" / "patna_demo_shelters.geojson"
+)
 
 
 @app.get("/api/datasets/raster")
@@ -1033,6 +1040,7 @@ def rf_pretrained_bundled(
         raise HTTPException(status_code=400, detail=f"Bundled RF detection failed: {exc}")
 
 
+
 @app.post("/api/routing/find-bundled")
 async def find_safe_route_bundled(
     latitude: float = Form(...),
@@ -1042,83 +1050,170 @@ async def find_safe_route_bundled(
     value_scale: str = Form("dB"),
 ):
     """
-    Flood-aware routing using bundled datasets (no file upload).
-    Only needs the user's latitude and longitude.
+    Flood-aware routing using the latest Random Forest prediction mask.
+    The band, threshold, and value_scale parameters are retained for
+    frontend compatibility; the binary prediction mask is used directly.
     """
+    import rasterio
+    import numpy as np
+
+    predictions_dir = (
+        Path(__file__).resolve().parent
+        / "outputs"
+        / "predictions"
+    )
+
+    prediction_files = sorted(
+        predictions_dir.glob("flood_candidates_*.tif"),
+        key=lambda file: file.stat().st_mtime,
+        reverse=True,
+    )
+
+    if not prediction_files:
+        raise HTTPException(
+            status_code=404,
+            detail="No Random Forest prediction found. Run flood prediction first.",
+        )
+
+    prediction_path = prediction_files[0]
+
     for label, path in [
-        ("raster", BUNDLED_RASTER_PATH),
-        ("roads",  BUNDLED_ROADS_PATH),
+        ("roads", BUNDLED_ROADS_PATH),
         ("shelters", BUNDLED_SHELTERS_PATH),
     ]:
         if not path.exists():
-            raise HTTPException(status_code=404, detail=f"Bundled {label} not found on server.")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Bundled {label} not found on server.",
+            )
+
     try:
-        features, valid, profile = read_features_tiled(BUNDLED_RASTER_PATH, [band])
+        # 1. Load the latest binary flood-candidate mask.
+                # 1. Load the latest binary flood-candidate mask.
+        with rasterio.open(prediction_path) as src:
+            if src.crs is None:
+                raise ValueError(
+                    "Prediction raster has no CRS; routing cannot align coordinates."
+                )
+
+            raw_mask = src.read(1)
+
+            # 1 = flood candidate, 0 = non-candidate, 255 = invalid
+            mask = raw_mask == 1
+            valid = (raw_mask == 0) | (raw_mask == 1)
+
+            profile = src.profile.copy()
+
         if not valid.any():
-            raise ValueError("The raster contains no valid pixels.")
+            raise ValueError("Prediction raster contains no valid pixels.")
 
-        # Auto-tune threshold when default -17 dB produces 0% flood
-        db_vals_r      = db_features(features, value_scale)
-        flat_vals_r    = db_vals_r[valid, 0]
-        # Auto-detect linear vs dB scale
-        detected_scale_r = _auto_detect_scale(features[valid, 0])
-        eff_scale_r      = detected_scale_r if value_scale == "dB" else value_scale
-        if eff_scale_r != value_scale:
-            db_vals_r   = db_features(features, eff_scale_r)
-            flat_vals_r = db_vals_r[valid, 0]
-        eff_threshold_r, _ = _resolve_threshold(flat_vals_r, threshold)
-
-        mask, _ = threshold_mask(features, valid, threshold_db=eff_threshold_r, value_scale=eff_scale_r)
-
+        # 2. Load roads and shelters in the prediction raster's CRS.
         roads_gdf, shelters_gdf = load_vectors(
-            BUNDLED_ROADS_PATH, BUNDLED_SHELTERS_PATH, profile["crs"]
+            BUNDLED_ROADS_PATH,
+            BUNDLED_SHELTERS_PATH,
+            profile["crs"],
         )
 
-        x, y = reproject_coords("EPSG:4326", profile["crs"], [longitude], [latitude])
+        # 3. Convert the user's start point from WGS84 into raster coordinates.
+        x, y = reproject_coords(
+            "EPSG:4326",
+            profile["crs"],
+            [longitude],
+            [latitude],
+        )
         start_xy = (x[0], y[0])
 
+        # 4. Calculate a route using the prediction mask.
         result, _, _, flooded_roads = route(
-            roads_gdf, shelters_gdf, mask, valid, profile["transform"],
-            start_xy, raster_crs=profile["crs"],
+            roads_gdf,
+            shelters_gdf,
+            mask,
+            valid,
+            profile["transform"],
+            start_xy,
+            raster_crs=profile["crs"],
         )
 
         if result is None:
             return {
                 "success": False,
-                "message": "No safe reachable shelter found from this location.",
+                "message": (
+                    "No safe reachable shelter was found from this location."
+                ),
                 "affected_roads": int(sum(flooded_roads)),
+                "prediction_file": prediction_path.name,
+                "label_warning": (
+                    "The input mask contains flood candidates, "
+                    "not independently confirmed flooding."
+                ),
             }
 
-        route_x = [p[0] for p in result["coordinates"]]
-        route_y = [p[1] for p in result["coordinates"]]
-        route_lon, route_lat = reproject_coords(profile["crs"], "EPSG:4326", route_x, route_y)
-        route_coordinates = [[lat, lon] for lat, lon in zip(route_lat, route_lon)]
+        # 5. Convert route coordinates back to WGS84 for the frontend.
+        route_x = [point[0] for point in result["coordinates"]]
+        route_y = [point[1] for point in result["coordinates"]]
 
-        shelter_row  = shelters_gdf.loc[result["shelter_index"]]
-        shelter_name = shelter_row.get("name") if "name" in shelter_row.index else "Safe Shelter"
+        route_lon, route_lat = reproject_coords(
+            profile["crs"],
+            "EPSG:4326",
+            route_x,
+            route_y,
+        )
+
+        route_coordinates = [
+            [lat, lon]
+            for lat, lon in zip(route_lat, route_lon)
+        ]
+
+        # 6. Get the selected shelter's details.
+        shelter_row = shelters_gdf.loc[result["shelter_index"]]
+        shelter_name = (
+            shelter_row.get("name")
+            if "name" in shelter_row.index
+            else "Safe Shelter"
+        )
+
         if shelter_name is None:
             shelter_name = "Safe Shelter"
 
         shelter_point = result["shelter"]
-        s_lon, s_lat  = reproject_coords(profile["crs"], "EPSG:4326", [shelter_point.x], [shelter_point.y])
 
+        shelter_lon, shelter_lat = reproject_coords(
+            profile["crs"],
+            "EPSG:4326",
+            [shelter_point.x],
+            [shelter_point.y],
+        )
+
+        # 7. Return the route in the format expected by the frontend.
         return {
             "success": True,
-            "message": "Safe route calculated successfully.",
+            "message": "Safe route calculated using the latest prediction mask.",
             "route": route_coordinates,
             "distance_m": round(float(result["length_m"]), 2),
             "affected_roads": int(sum(flooded_roads)),
             "shelter": {
                 "name": str(shelter_name),
-                "latitude":  float(s_lat[0]),
-                "longitude": float(s_lon[0]),
+                "latitude": float(shelter_lat[0]),
+                "longitude": float(shelter_lon[0]),
             },
-            "start": {"latitude": latitude, "longitude": longitude},
+            "start": {
+                "latitude": latitude,
+                "longitude": longitude,
+            },
+            "prediction_file": prediction_path.name,
+            "label_warning": (
+                "Flood candidates are not independently confirmed flooding."
+            ),
         }
+
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Bundled routing failed: {exc}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Prediction-based routing failed: {exc}",
+        )
+
 
 
 @app.post("/api/flood/rf-pretrained")
@@ -1495,6 +1590,93 @@ def flood_predict(request: PredictRequest = PredictRequest()):
             status_code=500,
             detail=f"Prediction failed: {exc}",
         )
+
+
+@app.get("/api/flood/candidates/overlay")
+def flood_candidates_overlay():
+    from pathlib import Path
+    from fastapi import HTTPException
+    import numpy as np
+
+    predictions_dir = (
+        Path(__file__).resolve().parent
+        / "outputs"
+        / "predictions"
+    )
+
+    files = sorted(
+        predictions_dir.glob("flood_candidates_*.tif"),
+        key=lambda file: file.stat().st_mtime,
+        reverse=True,
+    )
+
+    if not files:
+        raise HTTPException(
+            status_code=404,
+            detail="No flood prediction raster found. Run prediction first.",
+        )
+
+    raster_path = files[0]
+
+    try:
+        with rasterio.open(raster_path) as src:
+            if src.crs is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Prediction raster has no coordinate reference system.",
+                )
+
+            scale = min(1.0, 1200 / max(src.width, src.height))
+            width = max(1, int(src.width * scale))
+            height = max(1, int(src.height * scale))
+
+            mask = src.read(
+                1,
+                out_shape=(height, width),
+                resampling=Resampling.nearest,
+            )
+
+            bounds = transform_bounds(
+                src.crs,
+                "EPSG:4326",
+                *src.bounds,
+            )
+
+        rgba = np.zeros((height, width, 4), dtype=np.uint8)
+        rgba[mask == 1] = [239, 68, 68, 165]
+
+        image_buffer = BytesIO()
+        Image.fromarray(rgba, mode="RGBA").save(
+            image_buffer,
+            format="PNG",
+            optimize=True,
+        )
+
+        image_data = base64.b64encode(
+            image_buffer.getvalue()
+        ).decode("ascii")
+
+        return {
+            "success": True,
+            "filename": raster_path.name,
+            "image": f"data:image/png;base64,{image_data}",
+            "bounds": [
+                [bounds[1], bounds[0]],
+                [bounds[3], bounds[2]],
+            ],
+            "label_warning": (
+                "Red areas are flood candidates, not confirmed flooding."
+            ),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not create flood overlay: {exc}",
+        )
+
 
 
 @app.post("/api/assistant")

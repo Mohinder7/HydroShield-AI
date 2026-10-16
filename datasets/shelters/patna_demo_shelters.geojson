@@ -1,0 +1,10 @@
+{
+"type": "FeatureCollection",
+"name": "patna_demo_shelters",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature", "properties": { "name": "DEMO Destination 1 - Unverified", "type": "Synthetic test destination", "capacity": 0, "status": "DEMO_ONLY_NOT_A_REAL_SHELTER" }, "geometry": { "type": "Point", "coordinates": [ 85.299026398758798, 25.588313081995402 ] } },
+{ "type": "Feature", "properties": { "name": "DEMO Destination 2 - Unverified", "type": "Synthetic test destination", "capacity": 0, "status": "DEMO_ONLY_NOT_A_REAL_SHELTER" }, "geometry": { "type": "Point", "coordinates": [ 85.087082657549459, 25.477402983974432 ] } },
+{ "type": "Feature", "properties": { "name": "DEMO Destination 3 - Unverified", "type": "Synthetic test destination", "capacity": 0, "status": "DEMO_ONLY_NOT_A_REAL_SHELTER" }, "geometry": { "type": "Point", "coordinates": [ 85.071032716952999, 25.627818185816164 ] } }
+]
+}

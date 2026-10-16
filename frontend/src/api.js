@@ -341,3 +341,20 @@ export async function runGeeRFPredict(outputFilename = null) {
     if (!response.ok) throw new Error(data.detail || "GEE RF prediction failed");
     return data;
 }
+
+
+export async function getFloodCandidateOverlay() {
+    const response = await fetch(
+        `${API_URL}/flood/candidates/overlay`
+    );
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+        throw new Error(
+            data.detail || "Could not load flood-candidate overlay"
+        );
+    }
+
+    return data;
+}

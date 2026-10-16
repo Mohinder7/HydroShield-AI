@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
     MapContainer,
     TileLayer,
     Marker,
     Polyline,
     Popup,
+    ImageOverlay,
     useMap,
     useMapEvents,
 } from "react-leaflet";
@@ -14,8 +15,10 @@ import {
     findSafeRouteBundled,
     getRasterInfo,
     preprocessSentinel1,
+    getFloodCandidateOverlay
 } from "../api";
 import Icon from "../components/Icon";
+
 
 import "leaflet/dist/leaflet.css";
 
@@ -61,6 +64,18 @@ function RouteMapController({ route }) {
     return null;
 }
 
+function FloodOverlayMapController({ bounds }) {
+    const map = useMap();
+
+    useEffect(() => {
+        if (bounds) {
+            map.fitBounds(bounds, { padding: [20, 20] });
+        }
+    }, [map, bounds]);
+
+    return null;
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 export default function Routing() {
     // ── routing mode ──────────────────────────────────────────────────────
@@ -90,6 +105,12 @@ export default function Routing() {
     const [loading,  setLoading]  = useState(false);
     const [result,   setResult]   = useState(null);
     const [error,    setError]    = useState("");
+
+    // ── flood prediction overlay ─────────────────────────────────────────
+    const [showFloodOverlay, setShowFloodOverlay] = useState(false);
+    const [floodOverlay, setFloodOverlay] = useState(null);
+    const [overlayLoading, setOverlayLoading] = useState(false);
+    const [overlayError, setOverlayError] = useState("");
 
     // ── GPS location ──────────────────────────────────────────────────────
     const useCurrentLocation = () => {
@@ -198,6 +219,30 @@ export default function Routing() {
             setLoading(false);
         }
     };
+
+    // ── load and toggle flood overlay ────────────────────────────────────
+const handleFloodOverlayToggle = async () => {
+    if (showFloodOverlay) {
+        setShowFloodOverlay(false);
+        return;
+    }
+
+    setOverlayError("");
+    setOverlayLoading(true);
+
+    try {
+        const data = await getFloodCandidateOverlay();
+
+        setFloodOverlay(data);
+        setShowFloodOverlay(true);
+    } catch (err) {
+        setOverlayError(
+            err.message || "Could not load flood-candidate overlay."
+        );
+    } finally {
+        setOverlayLoading(false);
+    }
+};
 
     // ── derived map values ─────────────────────────────────────────────────
     const routeCoords   = result?.route || [];
@@ -482,6 +527,47 @@ export default function Routing() {
                         )}
                     </div>
 
+                    <div style={{
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
+    flexWrap: "wrap",
+    marginBottom: "12px"
+}}>
+    <button
+        type="button"
+        onClick={handleFloodOverlayToggle}
+        disabled={overlayLoading}
+        style={{
+            padding: "10px 16px",
+            borderRadius: "8px",
+            border: "1px solid #dc2626",
+            background: showFloodOverlay ? "#991b1b" : "#fff",
+            color: showFloodOverlay ? "#fff" : "#b91c1c",
+            cursor: overlayLoading ? "wait" : "pointer",
+            fontWeight: 600
+        }}
+    >
+        {overlayLoading
+            ? "Loading flood layer..."
+            : showFloodOverlay
+            ? "Hide Flood Candidates"
+            : "Show Flood Candidates"}
+    </button>
+
+    {showFloodOverlay && (
+        <span style={{ fontSize: "13px", color: "#b91c1c" }}>
+            Red areas = predicted flood candidates
+        </span>
+    )}
+
+    {overlayError && (
+        <span style={{ fontSize: "13px", color: "#dc2626" }}>
+            {overlayError}
+        </span>
+    )}
+</div>
+
                     <div className="routing-map">
                         <MapContainer
                             center={mapCenter}
@@ -493,6 +579,19 @@ export default function Routing() {
                                 attribution="&copy; OpenStreetMap contributors"
                                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                             />
+
+                            {showFloodOverlay && floodOverlay && (
+                                <ImageOverlay
+                                    url={floodOverlay.image}
+                                    bounds={floodOverlay.bounds}
+                                    opacity={1}
+                                    interactive={false}
+                                />
+                            )}
+
+                            {showFloodOverlay && floodOverlay && (
+                                <FloodOverlayMapController bounds={floodOverlay.bounds} />
+                            )}
 
                             <LocationPicker onLocationSelect={selectMapLocation} />
 
